@@ -19,6 +19,43 @@ services:
             - 5433:5432
         volumes:
             - auth_service_db_data:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d auth_service']
+            interval: 5s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+        networks:
+            - todo_app_network
+    # Add a migration service for the auth_service to run migrations before starting the main service
+    auth_migration:
+        build: ./auth_service
+        # Overwrite the default start command with your migration script
+        command: node db/migrate.js
+        env_file:
+            - ./auth_service/.env.test
+        depends_on:
+            auth_service_db:
+                condition: service_healthy
+        networks:
+            - todo_app_network
+    auth_service:
+        build: ./auth_service
+        ports:
+            - 3002:3002
+        env_file:
+            - ./auth_service/.env.test
+        networks:
+            - todo_app_network
+        depends_on:
+            auth_service_db:
+                condition: service_healthy
+            auth_migration:
+                condition: service_completed_successfully
+        restart: always
 volumes:
     todo_service_db_data:
     auth_service_db_data:
+networks:
+    todo_app_network:
+        driver: bridge

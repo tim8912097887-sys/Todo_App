@@ -1,0 +1,66 @@
+name: CI-auth_service-Test
+on:
+    push:
+        branches:
+            - main
+            - dev
+    pull_request:
+        branches:
+            - main
+            - dev
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
+env:
+    NODE_ENV: test
+    PORT: 3002
+    LOG_LEVEL: debug
+    CENTRAL_LOG_TOKEN: ${{ secrets.CENTRAL_LOG_TOKEN || 'rURY92XXbmu4jxSetfGsisdf' }}
+    DATABASE_URL: ${{ secrets.DATABASE_URL || 'postgresql://postgres:password@localhost:5433/auth_service' }}
+    TOKEN_SECRET: ${{ secrets.TOKEN_SECRET || 'e7ead07d8910318b24f3b5d5360b3956' }}
+    TOKEN_EXPIRES_IN: 7d
+    JWT_ISSUER: http://localhost:3002
+    JWT_AUDIENCE: http://localhost:5173
+jobs:
+    auth_service-test:
+        runs-on: ubuntu-latest
+        services:
+            auth_service_db:
+                image: postgres:14-alpine
+                env:
+                    POSTGRES_USER: postgres
+                    POSTGRES_PASSWORD: password
+                    POSTGRES_DB: auth_service
+                ports:
+                    - 5433:5432
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        defaults:
+            run:
+                working-directory: ./auth_service
+        strategy:
+            matrix:
+                node-version: [20, 22]
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+            - name: Setup Pnpm
+              uses: pnpm/action-setup@v3
+              with:
+                  version: 10.26.1
+                  standalone: true
+            - name: Set up Node.js ${{ matrix.node-version }}
+              uses: actions/setup-node@v3
+              with:
+                  node-version: ${{ matrix.node-version }}
+                  cache: pnpm
+                  cache-dependency-path: './auth_service/pnpm-lock.yaml'
+            - name: Run migration
+              run: pnpm run db:migrate
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+            - name: Run tests
+              run: pnpm run test
