@@ -27,6 +27,17 @@ const EnvSchema = z.object({
             /^postgresql:\/\/(?:([^:\s]+):([^@\s]+)@)?([^:/\s]+)(?::(\d+))?\/([^\s?]+)(?:\?(.+))?$/,
             'Database URL is invalid',
         ),
+    JWT_ISSUER: z.url('JWT_ISSUER must be a valid URL'),
+    JWT_AUDIENCE: z.url('JWT_AUDIENCE must be a valid URL'),
+    TOKEN_SECRET: z
+        .string()
+        .length(32, 'TOKEN_SECRET must be exactly 32 characters'),
+    TOKEN_EXPIRES_IN: z
+        .string()
+        .regex(
+            /^\d+[smhd]$/,
+            'TOKEN_EXPIRES_IN must be a string like "15m", "1h", "2d"',
+        ),
 });
 
 const result = EnvSchema.safeParse(process.env);

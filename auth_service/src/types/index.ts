@@ -58,3 +58,17 @@ export type AuthPayload = {
     iat: number;
     exp: number;
 };
+
+export type IUser = {
+    id: string;
+    email: string;
+    username: string;
+    password: string;
+    tokenVersion: number;
+    createdAt: Date;
+    updatedAt: Date;
+    isVerified: boolean;
+    loginAttempt: number;
+    loginLock: Date | null;
+    deletedAt: Date | null;
+};
