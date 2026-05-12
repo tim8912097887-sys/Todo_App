@@ -23,7 +23,9 @@
         "@types/express": "^5.0.6",
         "@types/morgan": "^1.9.10",
         "@types/node": "^25.7.0",
+        "@types/pg": "^8.20.0",
         "@vitest/coverage-v8": "^4.1.6",
+        "drizzle-kit": "^0.31.10",
         "eslint": "^10.3.0",
         "ts-node": "^10.9.2",
         "tsx": "^4.21.0",
@@ -35,8 +37,10 @@
         "@logtail/node": "^0.5.8",
         "@logtail/winston": "^0.5.8",
         "dotenv": "^17.4.2",
+        "drizzle-orm": "^0.45.2",
         "express": "^5.2.1",
         "morgan": "^1.10.1",
+        "pg": "^8.20.0",
         "winston": "^3.19.0",
         "zod": "^4.4.3"
     }

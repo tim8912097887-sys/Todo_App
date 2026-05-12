@@ -21,6 +21,12 @@ const EnvSchema = z.object({
         error: "Log level must be 'error','warn','info','debug'",
     }),
     CENTRAL_LOG_TOKEN: z.string().nonempty('Central log token is required'),
+    DATABASE_URL: z
+        .string()
+        .regex(
+            /^postgresql:\/\/(?:([^:\s]+):([^@\s]+)@)?([^:/\s]+)(?::(\d+))?\/([^\s?]+)(?:\?(.+))?$/,
+            'Database URL is invalid',
+        ),
 });
 
 const result = EnvSchema.safeParse(process.env);
