@@ -16,7 +16,7 @@ const logFormat =
 
 export const logger = winston.createLogger({
     level: env.LOG_LEVEL,
-    defaultMeta: { service: 'Todo_Service' },
+    defaultMeta: { service: 'Auth_Service' },
     format: combine(
         logFormat,
         errors({ stack: env.NODE_ENV !== 'production' }),
