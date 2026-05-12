@@ -7,3 +7,18 @@ services:
             POSTGRES_DB: todo_service
         ports:
             - 5432:5432
+        volumes:
+            - todo_service_db_data:/var/lib/postgresql/data
+    auth_service_db:
+        image: postgres:14-alpine
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: password
+            POSTGRES_DB: auth_service
+        ports:
+            - 5433:5432
+        volumes:
+            - auth_service_db_data:/var/lib/postgresql/data
+volumes:
+    todo_service_db_data:
+    auth_service_db_data:
