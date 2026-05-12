@@ -1,0 +1,27 @@
+{
+    "compilerOptions": {
+        // Output code version
+        "target": "es2020",
+        "module": "nodenext",
+
+        // Type Checking
+        "strict": true,
+        "noImplicitAny": true,
+        "noImplicitThis": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "strictNullChecks": true,
+        "noFallthroughCasesInSwitch": true,
+        "allowUnusedLabels": false,
+        "noUncheckedSideEffectImports": true,
+        "allowUnreachableCode": false,
+        "exactOptionalPropertyTypes": true,
+
+        // Module Resolution
+        "moduleResolution": "nodenext",
+        "esModuleInterop": true, // CommonJS/ES module interop
+        "resolveJsonModule": true,
+        "forceConsistentCasingInFileNames": true,
+        "isolatedModules": true
+    }
+}
