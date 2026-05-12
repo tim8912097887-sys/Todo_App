@@ -2,10 +2,13 @@ import express from 'express';
 import morgan from 'morgan';
 import { errorHandler } from '#middlewares/error-handler.js';
 import { notFoundHandler } from '#middlewares/notfound-handler.js';
+import { authContainer } from './auth/v1/container.js';
+import cookieParser from 'cookie-parser';
 
 export const initializeApp = () => {
     const app = express();
 
+    app.use(cookieParser());
     // Body parser middleware
     app.use(express.json());
 
@@ -23,6 +26,8 @@ export const initializeApp = () => {
         });
     });
 
+    // Auth routes
+    app.use('/api/v1/auth', authContainer.getRouter());
     // Error Handler
     app.use(errorHandler);
     app.use(notFoundHandler);
