@@ -5,6 +5,7 @@ on:
             - main
             - dev
             - feat/**
+            - fix/**
         paths:
             - 'auth_service/**'
     pull_request:
