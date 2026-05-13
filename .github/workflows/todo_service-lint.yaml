@@ -5,6 +5,7 @@ on:
             - main
             - dev
             - feat/**
+            - fix/**
         paths:
             - 'todo_service/**'
     pull_request:

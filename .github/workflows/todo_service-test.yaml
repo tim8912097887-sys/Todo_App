@@ -4,6 +4,8 @@ on:
         branches:
             - main
             - dev
+            - feat/**
+            - fix/**
     pull_request:
         branches:
             - main
