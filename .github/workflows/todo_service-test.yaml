@@ -17,8 +17,8 @@ env:
     NODE_ENV: test
     PORT: 3001
     LOG_LEVEL: debug
-    CENTRAL_LOG_TOKEN: ${{ secrets.CENTRAL_LOG_TOKEN }}
-    DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    CENTRAL_LOG_TOKEN: ${{ secrets.CENTRAL_LOG_TOKEN || 'rURY92XXbmu4jxSetfGsidfg' }}
+    DATABASE_URL: ${{ secrets.DATABASE_URL || 'postgresql://postgres:password@localhost:5432/todo_service' }}
 jobs:
     todo_service-test:
         runs-on: ubuntu-latest
