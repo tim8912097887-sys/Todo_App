@@ -22,6 +22,7 @@ env:
     TOKEN_EXPIRES_IN: 7d
     JWT_ISSUER: http://localhost:3002
     JWT_AUDIENCE: http://localhost:5173
+    RABBITMQ_URL: ${{ secrets.RABBITMQ_URL || 'amqp://admin:password@localhost:5672' }}
 jobs:
     auth_service-test:
         runs-on: ubuntu-latest

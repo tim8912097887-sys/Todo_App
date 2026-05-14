@@ -8,6 +8,7 @@ import {
     getMockUser,
 } from '../utils/auth.js';
 import * as passwordUtil from '#utils/password.js';
+import * as rabbitmq from '#configs/rabbitmq.js';
 
 describe('Auth Service', () => {
     let mockAuthRepository: Mocked<AuthRepository>;
@@ -22,6 +23,7 @@ describe('Auth Service', () => {
             setLoginLock: vitest.fn(),
             resetLoginAttemptAndLock: vitest.fn(),
             deleteUserById: vitest.fn(),
+            createOtp: vitest.fn(),
         } as unknown as Mocked<AuthRepository>;
 
         authService = new AuthService(mockAuthRepository);
@@ -38,6 +40,10 @@ describe('Auth Service', () => {
             };
             mockAuthRepository.findUserByEmail.mockResolvedValue([]);
             mockAuthRepository.createUser.mockResolvedValue([mockCreatedUser]);
+            mockAuthRepository.createOtp.mockResolvedValue([
+                { code: '123456' },
+            ]);
+            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
 
             // Act
             const result = await authService.signup(mockCreateData);
@@ -47,7 +53,13 @@ describe('Auth Service', () => {
                 mockCreateData.email,
             );
             expect(mockAuthRepository.createUser).toHaveBeenCalled();
-            expect(result).toEqual([mockCreatedUser]);
+            expect(mockAuthRepository.createOtp).toHaveBeenCalled();
+            expect(result).toEqual(mockCreatedUser);
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith('signup_email', {
+                username: mockCreatedUser.username,
+                email: mockCreatedUser.email,
+                code: '123456',
+            });
         });
 
         it('When signup with email that exists and user is verified, then return undefined', async () => {
@@ -60,6 +72,7 @@ describe('Auth Service', () => {
             mockAuthRepository.findUserByEmail.mockResolvedValue([
                 existingUser,
             ]);
+            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
 
             // Act
             const result = await authService.signup(mockCreateData);
@@ -70,6 +83,13 @@ describe('Auth Service', () => {
             );
             expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
             expect(result).toBeUndefined();
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith(
+                'signup_verified_email',
+                {
+                    username: existingUser.username,
+                    email: existingUser.email,
+                },
+            );
         });
 
         it('When signup with email that exists but user is not verified, then return undefined', async () => {
@@ -82,6 +102,10 @@ describe('Auth Service', () => {
             mockAuthRepository.findUserByEmail.mockResolvedValue([
                 existingUser,
             ]);
+            mockAuthRepository.createOtp.mockResolvedValue([
+                { code: '123456' },
+            ]);
+            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
 
             // Act
             const result = await authService.signup(mockCreateData);
@@ -92,6 +116,11 @@ describe('Auth Service', () => {
             );
             expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
             expect(result).toBeUndefined();
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith('signup_email', {
+                username: existingUser.username,
+                email: existingUser.email,
+                code: '123456',
+            });
         });
 
         it('When signup and repository error occurs during findUserByEmail, then throw error', async () => {
