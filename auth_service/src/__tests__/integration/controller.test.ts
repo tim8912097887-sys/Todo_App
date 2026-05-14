@@ -10,6 +10,7 @@ import {
 } from '../utils/auth.js';
 import { BadRequestError } from '#errors/bad-request.js';
 import { authContainer } from '#auth/v1/container.js';
+import * as rabbitmq from '#configs/rabbitmq.js';
 
 describe('Auth Controller', () => {
     let authController: AuthController;
@@ -33,6 +34,11 @@ describe('Auth Controller', () => {
     });
 
     describe('signup', () => {
+        // Mock sendToQueue to prevent actual RabbitMQ calls during tests
+        beforeEach(() => {
+            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
+        });
+
         it('When signup with valid new user, then return 201 success response', async () => {
             const signupData = getMockCreateUserData({
                 email: faker.internet.email().toLowerCase(),
