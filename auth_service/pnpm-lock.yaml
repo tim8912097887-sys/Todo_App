@@ -14,6 +14,9 @@ importers:
       '@logtail/winston':
         specifier: ^0.5.8
         version: 0.5.8(winston@3.19.0)
+      '@tim_madule/rabbitmq':
+        specifier: ^1.0.3
+        version: 1.0.3
       bcrypt-ts:
         specifier: ^8.0.1
         version: 8.0.1
@@ -38,6 +41,9 @@ importers:
       morgan:
         specifier: ^1.10.1
         version: 1.10.1
+      nanoid:
+        specifier: ^5.1.11
+        version: 5.1.11
       pg:
         specifier: ^8.20.0
         version: 8.20.0
@@ -796,6 +802,9 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  '@tim_madule/rabbitmq@1.0.3':
+    resolution: {integrity: sha512-vnWF1tmnp2l4+m43pwrhzUhp//ixSMQGIjRIQ+Y7qTUU2Cjniqp98FOXIMP3fwyHpkjxK/uTFco1fvGtLMXtQg==}
+
   '@tsconfig/node10@1.0.12':
     resolution: {integrity: sha512-UCYBaeFvM11aU2y3YPZ//O5Rhj+xKyzy7mvcIoAjASbigy8mHMryP5cK7dgjlz2hWxh1g5pLw084E0a/wlUSFQ==}
 
@@ -990,6 +999,10 @@ packages:
 
   ajv@6.15.0:
     resolution: {integrity: sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw==}
+
+  amqplib@2.0.1:
+    resolution: {integrity: sha512-a3P2MgfCf9nzVis12VxWEn0dS6hcqve7dlEAhXDtIWR27BlhtMkILOc+H9aeHjDi6i6r94dYKc2Kx2OFe3avvg==}
+    engines: {node: '>=18'}
 
   arg@4.1.3:
     resolution: {integrity: sha512-58S9QDqG0Xx27YwPSt9fJxivjYl432YCwfDMfZ+71RAqUrZef7LrKQZ3LHLOwCS4FLNBplP533Zx895SeOCHvA==}
@@ -1649,6 +1662,11 @@ packages:
   nanoid@3.3.12:
     resolution: {integrity: sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
+    hasBin: true
+
+  nanoid@5.1.11:
+    resolution: {integrity: sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==}
+    engines: {node: ^18 || >=20}
     hasBin: true
 
   natural-compare@1.4.0:
@@ -2577,6 +2595,10 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@tim_madule/rabbitmq@1.0.3':
+    dependencies:
+      amqplib: 2.0.1
+
   '@tsconfig/node10@1.0.12': {}
 
   '@tsconfig/node12@1.0.11': {}
@@ -2829,6 +2851,8 @@ snapshots:
       fast-json-stable-stringify: 2.1.0
       json-schema-traverse: 0.4.1
       uri-js: 4.4.1
+
+  amqplib@2.0.1: {}
 
   arg@4.1.3: {}
 
@@ -3448,6 +3472,8 @@ snapshots:
   ms@2.1.3: {}
 
   nanoid@3.3.12: {}
+
+  nanoid@5.1.11: {}
 
   natural-compare@1.4.0: {}
 

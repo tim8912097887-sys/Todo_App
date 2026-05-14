@@ -1,7 +1,8 @@
 import { users } from '#db/schema/user.js';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { CreateUserType } from './schemas/signup.js';
+import { otps } from '#db/schema/otp.js';
 
 export class AuthRepository {
     constructor(private readonly db: NodePgDatabase) {}
@@ -74,6 +75,51 @@ export class AuthRepository {
             .update(users)
             .set({
                 deletedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(eq(users.id, id));
+    }
+
+    public async createOtp(userId: string, code: string) {
+        return this.db
+            .insert(otps)
+            .values({
+                userId,
+                code,
+            })
+            .returning({
+                code: otps.code,
+            });
+    }
+
+    public async deleteOtpByUserId(id: string, otpCode: string) {
+        return this.db
+            .update(otps)
+            .set({
+                deletedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(and(eq(otps.userId, id), eq(otps.code, otpCode)));
+    }
+
+    public async verifyUser(id: string, otpCode: string) {
+        const [otp] = await this.db
+            .select({
+                id: otps.id,
+            })
+            .from(otps)
+            .where(
+                and(
+                    eq(otps.userId, id),
+                    eq(otps.code, otpCode),
+                    isNull(otps.deletedAt),
+                ),
+            );
+        if (!otp) {
+            return null;
+        }
+        return this.db
+            .update(users)
+            .set({
+                isVerified: sql`true`,
             })
             .where(eq(users.id, id));
     }

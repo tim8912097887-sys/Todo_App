@@ -4,6 +4,8 @@ import { AuthRepository } from './repository.js';
 import { LoginUserType } from './schemas/login.js';
 import { CreateUserType } from './schemas/signup.js';
 import { BadRequestError } from '#errors/bad-request.js';
+import { sendToQueue } from '#configs/rabbitmq.js';
+import { generateOTP } from '#utils/otp.js';
 
 export class AuthService {
     private readonly logger = logger;
@@ -18,13 +20,25 @@ export class AuthService {
                 this.logger.warn(
                     `User with email ${userInfo.email} already exists but not verified.`,
                 );
+                const [otp] = await this.authRepository.createOtp(
+                    existingUser.id,
+                    generateOTP(6),
+                );
                 // TODO: Use rabbitmq to send email to user to verify account
+                await sendToQueue('signup_email', {
+                    username: existingUser.username,
+                    email: existingUser.email,
+                    code: otp.code,
+                });
                 return;
             } else {
                 this.logger.warn(
                     `User with email ${userInfo.email} already exists.`,
                 );
-                // TODO: Use rabbitmq to send email to user to reset password
+                await sendToQueue('signup_verified_email', {
+                    username: existingUser.username,
+                    email: existingUser.email,
+                });
                 return;
             }
         }
@@ -33,7 +47,17 @@ export class AuthService {
         const hashedPassword = await hashPassword(userInfo.password);
         userInfo.password = hashedPassword;
         const user = { ...userInfo };
-        return this.authRepository.createUser(user);
+        const [createdUser] = await this.authRepository.createUser(user);
+        const code = generateOTP(6);
+        const [otp] = await this.authRepository.createOtp(createdUser.id, code);
+
+        await sendToQueue('signup_email', {
+            username: createdUser.username,
+            email: createdUser.email,
+            code: otp.code,
+        });
+
+        return createdUser;
     }
 
     async login(userInfo: LoginUserType) {
