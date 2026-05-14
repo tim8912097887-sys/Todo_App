@@ -1,6 +1,8 @@
 cd todo_service
 pnpm run lint
-pnpm run build
 
 cd ../auth_service
+pnpm run lint
+
+cd ../email_service
 pnpm run lint

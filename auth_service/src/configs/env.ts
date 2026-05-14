@@ -38,6 +38,7 @@ const EnvSchema = z.object({
             /^\d+[smhd]$/,
             'TOKEN_EXPIRES_IN must be a string like "15m", "1h", "2d"',
         ),
+    RABBITMQ_URL: z.string().nonempty('RabbitMQ URL is required'),
 });
 
 const result = EnvSchema.safeParse(process.env);
