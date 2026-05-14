@@ -1,0 +1,37 @@
+{
+    "name": "email_service",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "type": "module",
+    "imports": {
+        "#*": "./*"
+    },
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "lint": "eslint ./src",
+        "lint:fix": "eslint ./src --fix"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "packageManager": "pnpm@10.26.1",
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@types/express": "^5.0.6",
+        "@types/node": "^25.7.0",
+        "@types/nodemailer": "^8.0.0",
+        "eslint": "^10.3.0",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.59.3"
+    },
+    "dependencies": {
+        "@logtail/node": "^0.5.8",
+        "@logtail/winston": "^0.5.8",
+        "@tim_madule/rabbitmq": "^1.0.3",
+        "express": "^5.2.1",
+        "nodemailer": "^8.0.7",
+        "winston": "^3.19.0",
+        "zod": "^4.4.3"
+    }
+}
