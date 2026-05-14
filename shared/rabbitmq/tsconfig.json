@@ -1,0 +1,41 @@
+{
+    "compilerOptions": {
+        // Output code version
+        "target": "es2020",
+        "module": "nodenext",
+
+        // Type Checking
+        "strict": true,
+        "noImplicitAny": true,
+        "noImplicitThis": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "strictNullChecks": true,
+        "noFallthroughCasesInSwitch": true,
+        "allowUnusedLabels": false,
+        "noUncheckedSideEffectImports": true,
+        "allowUnreachableCode": false,
+        "exactOptionalPropertyTypes": true,
+
+        // Module Resolution
+        "moduleResolution": "nodenext",
+        "esModuleInterop": true, // CommonJS/ES module interop
+        "resolveJsonModule": true,
+        "forceConsistentCasingInFileNames": true,
+        "isolatedModules": true,
+        "types": ["@types/node"],
+        // File Location
+        "rootDir": ".",
+        "outDir": "dist",
+        // Emit Options
+        "sourceMap": true, // Generate source maps
+        "removeComments": true, // Remove comments in output
+        "noEmitOnError": true, // Don't emit if there are errors
+        // Performance
+        "skipLibCheck": true, // Skip type checking of declaration files
+        "declaration": true,
+        "declarationMap": true
+    },
+    "include": ["index.ts"],
+    "exclude": ["node_modules"]
+}
