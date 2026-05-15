@@ -5,22 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1778571390717,
-      "tag": "0000_open_maria_hill",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1778576426434,
-      "tag": "0001_friendly_mole_man",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1778740820886,
-      "tag": "0002_abandoned_black_cat",
+      "when": 1778846121825,
+      "tag": "0000_hard_sharon_ventura",
       "breakpoints": true
     }
   ]

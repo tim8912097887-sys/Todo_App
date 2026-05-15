@@ -73,3 +73,16 @@ export type IUser = {
     loginLock: Date | null;
     deletedAt: Date | null;
 };
+
+export type OtpType = 'email_verification';
+
+export type CreateOtpInfo = {
+    userId: string;
+    code: string;
+    otpType: OtpType;
+};
+
+export type GetOtpInfo = {
+    userId: string;
+    otpType: OtpType;
+};
