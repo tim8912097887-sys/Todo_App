@@ -37,6 +37,7 @@ export class AuthRepository {
                 id: users.id,
                 email: users.email,
                 username: users.username,
+                tokenVersion: users.tokenVersion,
             })
             .from(users)
             .where(eq(users.id, id));
@@ -122,5 +123,14 @@ export class AuthRepository {
                 isVerified: sql`true`,
             })
             .where(eq(users.id, id));
+    }
+
+    public async incrementTokenVersion(userId: string) {
+        return this.db
+            .update(users)
+            .set({
+                tokenVersion: sql`${users.tokenVersion} + 1`,
+            })
+            .where(eq(users.id, userId));
     }
 }

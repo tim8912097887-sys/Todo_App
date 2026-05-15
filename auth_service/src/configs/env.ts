@@ -38,7 +38,22 @@ const EnvSchema = z.object({
             /^\d+[smhd]$/,
             'TOKEN_EXPIRES_IN must be a string like "15m", "1h", "2d"',
         ),
-    RABBITMQ_URL: z.string().nonempty('RabbitMQ URL is required'),
+    RABBITMQ_URL: z
+        .string()
+        .refine(
+            (url) => url.startsWith('amqp://') || url.startsWith('amqps://'),
+            {
+                message: 'Invalid RabbitMQ URL',
+            },
+        ),
+    REDIS_URL: z
+        .string()
+        .refine(
+            (url) => url.startsWith('redis://') || url.startsWith('rediss://'),
+            {
+                message: 'Invalid Redis URL',
+            },
+        ),
 });
 
 const result = EnvSchema.safeParse(process.env);

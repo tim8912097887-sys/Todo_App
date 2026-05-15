@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { AuthService } from './service.js';
-import { createCookieOptions, sendCookie } from '#utils/cookie.js';
+import { clearCookie, createCookieOptions, sendCookie } from '#utils/cookie.js';
 import { createToken } from '#utils/token.js';
 import { env } from '#configs/env.js';
 import { responseEnvelope } from '#utils/response-envelope.js';
@@ -33,6 +33,36 @@ export class AuthController {
         sendCookie(res, 'access_token', accessToken, cookieOptions);
         const returnUser = UserDto.fromEntity(user);
         const data = { user: returnUser, message: 'Login successfully' };
+        const successResponse = { res, data };
+        this.ok(successResponse);
+    }
+
+    async logoutAll(req: Request, res: Response, _next: NextFunction) {
+        const userId = req.user.sub;
+        const tokenVersion = req.user.token_version;
+        await this.authService.logoutAll({ userId, tokenVersion });
+        clearCookie(res, 'access_token');
+        const data = { message: 'Logout all accounts successfully' };
+        const successResponse = { res, data };
+        this.ok(successResponse);
+    }
+
+    async logout(req: Request, res: Response, _next: NextFunction) {
+        const sub = req.user.sub;
+        const token_version = req.user.token_version;
+        const jti = req.user.jti;
+        const exp = req.user.exp;
+        await this.authService.logout({ sub, token_version, jti, exp });
+        clearCookie(res, 'access_token');
+        const data = { message: 'Logout successfully' };
+        const successResponse = { res, data };
+        this.ok(successResponse);
+    }
+
+    async verifyAccount(req: Request, res: Response, _next: NextFunction) {
+        const { code, email } = req.body;
+        await this.authService.verifyAccount({ code, email });
+        const data = { message: 'Account verified successfully' };
         const successResponse = { res, data };
         this.ok(successResponse);
     }
