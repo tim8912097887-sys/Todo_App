@@ -55,6 +55,7 @@ export type Payload = {
 export type AuthPayload = {
     sub: string;
     token_version: number;
+    jti: string;
     iat: number;
     exp: number;
 };

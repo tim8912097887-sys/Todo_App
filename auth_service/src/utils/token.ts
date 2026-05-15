@@ -9,12 +9,14 @@ export const createToken = async (
     expiresIn: string,
 ) => {
     const encryptSecret = new TextEncoder().encode(secret);
+    const jti = `jti-${crypto.randomUUID()}`; // Unique identifier for the token
     const token = await new EncryptJWT(payLoad)
         .setProtectedHeader({ alg: 'dir', enc: 'A256GCM' }) // alg: 'dir' means direct encryption
         .setIssuedAt()
         .setIssuer(env.JWT_ISSUER)
         .setAudience(env.JWT_AUDIENCE)
         .setExpirationTime(expiresIn)
+        .setJti(jti) // Unique identifier for the token
         .encrypt(encryptSecret);
 
     return token;

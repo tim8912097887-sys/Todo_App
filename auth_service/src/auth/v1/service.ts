@@ -6,6 +6,7 @@ import { CreateUserType } from './schemas/signup.js';
 import { BadRequestError } from '#errors/bad-request.js';
 import { sendToQueue } from '#configs/rabbitmq.js';
 import { generateOTP } from '#utils/otp.js';
+import { redisInstance } from '#configs/redis.js';
 
 export class AuthService {
     private readonly logger = logger;
@@ -117,5 +118,81 @@ export class AuthService {
         await this.authRepository.resetLoginAttemptAndLock(userInfo.email);
         const { password: _password, ...user } = exsistingUser;
         return user;
+    }
+
+    async logoutAll(logoutAllInfo: { userId: string; tokenVersion: number }) {
+        const { userId, tokenVersion } = logoutAllInfo;
+        const [user] = await this.authRepository.findUserById(userId);
+        if (!user) {
+            this.logger.warn(`User with id ${userId} not found.`);
+            throw new BadRequestError('User not found.');
+        }
+
+        if (user.tokenVersion !== tokenVersion) {
+            this.logger.warn(
+                `User with id ${userId} token version ${user.tokenVersion} not match token version ${tokenVersion}.`,
+            );
+            throw new BadRequestError('Token version is incorrect.');
+        }
+
+        await this.authRepository.incrementTokenVersion(userId);
+    }
+
+    async logout(logoutInfo: {
+        sub: string;
+        token_version: number;
+        jti: string;
+        exp: number;
+    }) {
+        const {
+            sub: userId,
+            token_version: tokenVersion,
+            jti,
+            exp,
+        } = logoutInfo;
+        const [user] = await this.authRepository.findUserById(userId);
+        if (!user) {
+            this.logger.warn(`User with id ${userId} not found.`);
+            throw new BadRequestError('User not found.');
+        }
+
+        if (user.tokenVersion !== tokenVersion) {
+            this.logger.warn(
+                `User with id ${userId} token version ${user.tokenVersion} not match token version ${tokenVersion}.`,
+            );
+            throw new BadRequestError('Token version is incorrect.');
+        }
+
+        const leftTime = Math.ceil(exp - Date.now() / 1000);
+        if (leftTime > 0) {
+            await redisInstance.set(`jti_${jti}`, 'blacklisted', {
+                expiration: {
+                    type: 'EX',
+                    value: leftTime,
+                },
+            });
+        }
+    }
+
+    async verifyAccount(verifyInfo: { code: string; email: string }) {
+        const { code, email } = verifyInfo;
+        const [user] = await this.authRepository.findUserByEmail(email);
+        if (!user) {
+            this.logger.warn(`User with email ${email} not found.`);
+            throw new BadRequestError('User not found.');
+        }
+        if (user.isVerified) {
+            this.logger.warn(`User with email ${email} is already verified.`);
+            throw new BadRequestError('User is already verified.');
+        }
+        const otp = await this.authRepository.verifyUser(user.id, code);
+        if (!otp) {
+            this.logger.warn(
+                `User with email ${email} not found otp with code ${code}.`,
+            );
+            throw new BadRequestError('OTP is incorrect.');
+        }
+        await this.authRepository.deleteOtpByUserId(user.id, code);
+        return;
     }
 }

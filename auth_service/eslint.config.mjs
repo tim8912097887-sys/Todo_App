@@ -31,6 +31,7 @@ export default defineConfig(
             ],
             '@typescript-eslint/no-explicit-any': 'off',
             '@typescript-eslint/restrict-template-expressions': 'error',
+            '@typescript-eslint/no-extraneous-class': 'off',
         },
     },
 );

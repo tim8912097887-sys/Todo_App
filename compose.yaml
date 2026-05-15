@@ -1,4 +1,30 @@
 services:
+    redis_service:
+        image: redis:7.2
+        container_name: redis_service
+        restart: unless-stopped
+        ports:
+            - '6379:6379'
+        networks:
+            - todo_app_network
+        volumes:
+            - redis_data:/data
+        command: redis-server --requirepass password
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'redis-cli',
+                    '--user',
+                    'admin',
+                    '--pass',
+                    'password',
+                    'ping',
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
     rabbitmq:
         image: rabbitmq:3-management-alpine
         container_name: rabbitmq
@@ -74,6 +100,8 @@ services:
                 condition: service_healthy
             auth_migration:
                 condition: service_completed_successfully
+            redis_service:
+                condition: service_healthy
         restart: always
     email_service:
         build: ./email_service
@@ -91,6 +119,7 @@ volumes:
     todo_service_db_data:
     auth_service_db_data:
     rabbitmq_data:
+    redis_data:
 networks:
     todo_app_network:
         driver: bridge
