@@ -23,6 +23,7 @@ env:
     JWT_ISSUER: http://localhost:3002
     JWT_AUDIENCE: http://localhost:5173
     RABBITMQ_URL: ${{ secrets.RABBITMQ_URL || 'amqp://admin:password@localhost:5672' }}
+    REDIS_URL: ${{ secrets.REDIS_URL || 'redis://:password@localhost:6379' }}
 jobs:
     auth_service-test:
         runs-on: ubuntu-latest
@@ -40,6 +41,17 @@ jobs:
                     --health-interval 10s
                     --health-timeout 5s
                     --health-retries 5
+            redis_service:
+                image: redis:7-alpine
+                ports:
+                    - 6379:6379
+                options: >-
+                    --health-cmd "redis-cli -a password ping || exit 1"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                command: >
+                    redis-server --requirepass password
         defaults:
             run:
                 working-directory: ./auth_service

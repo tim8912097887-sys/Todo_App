@@ -1,138 +1,164 @@
 import { logger } from '#configs/logger.js';
+import { sendToQueue } from '#configs/rabbitmq.js';
+import { BadRequestError } from '#errors/bad-request.js';
+import { AUTH_LIMITS } from '#auth/v1/constants.js';
+import { compareOtp, generateOTP, hashOtp } from '#utils/otp.js';
 import { comparePassword, hashPassword } from '#utils/password.js';
-import { AuthRepository } from './repository.js';
+import { AuthRepository } from './repository/auth.js';
+import { OtpRepository } from './repository/otp.js';
+import { TokenRepository } from './repository/token.js';
 import { LoginUserType } from './schemas/login.js';
 import { CreateUserType } from './schemas/signup.js';
-import { BadRequestError } from '#errors/bad-request.js';
-import { sendToQueue } from '#configs/rabbitmq.js';
-import { generateOTP } from '#utils/otp.js';
-import { redisInstance } from '#configs/redis.js';
 
 export class AuthService {
     private readonly logger = logger;
-    constructor(private readonly authRepository: AuthRepository) {}
+
+    constructor(
+        private readonly authRepository: AuthRepository,
+        private readonly otpRepository: OtpRepository,
+        private readonly tokenRepository: TokenRepository,
+    ) {}
 
     async signup(userInfo: CreateUserType) {
         const [existingUser] = await this.authRepository.findUserByEmail(
             userInfo.email,
         );
+
         if (existingUser) {
-            if (!existingUser.isVerified) {
-                this.logger.warn(
-                    `User with email ${userInfo.email} already exists but not verified.`,
+            if (!existingUser.emailVerifiedAt) {
+                await this.sendVerificationOtp(existingUser);
+                this.logger.info(
+                    `Resent verification OTP to ${userInfo.email} during signup attempt.`,
                 );
-                const [otp] = await this.authRepository.createOtp(
-                    existingUser.id,
-                    generateOTP(6),
-                );
-                // TODO: Use rabbitmq to send email to user to verify account
-                await sendToQueue('signup_email', {
-                    username: existingUser.username,
-                    email: existingUser.email,
-                    code: otp.code,
-                });
-                return;
-            } else {
-                this.logger.warn(
-                    `User with email ${userInfo.email} already exists.`,
-                );
-                await sendToQueue('signup_verified_email', {
-                    username: existingUser.username,
-                    email: existingUser.email,
-                });
                 return;
             }
+            this.logger.warn(
+                `Signup attempt with already registered email ${userInfo.email}`,
+            );
+            // Send warning email to user about existing account
+            sendToQueue('signup_verified_email', {
+                email: userInfo.email,
+                username: userInfo.username,
+            });
+            return;
         }
 
-        // Hash password
         const hashedPassword = await hashPassword(userInfo.password);
-        userInfo.password = hashedPassword;
-        const user = { ...userInfo };
-        const [createdUser] = await this.authRepository.createUser(user);
-        const code = generateOTP(6);
-        const [otp] = await this.authRepository.createOtp(createdUser.id, code);
 
-        await sendToQueue('signup_email', {
-            username: createdUser.username,
-            email: createdUser.email,
-            code: otp.code,
+        const [createdUser] = await this.authRepository.createUser({
+            ...userInfo,
+            password: hashedPassword,
         });
+
+        await this.sendVerificationOtp(createdUser);
 
         return createdUser;
     }
 
     async login(userInfo: LoginUserType) {
-        const [exsistingUser] = await this.authRepository.findUserByEmail(
+        const [existingUser] = await this.authRepository.findUserByEmail(
             userInfo.email,
         );
-        if (!exsistingUser || !exsistingUser.isVerified) {
-            if (!exsistingUser) {
-                this.logger.warn(
-                    `User with email ${userInfo.email} not found.`,
-                );
-            } else {
-                this.logger.warn(
-                    `User with email ${userInfo.email} is not verified.`,
-                );
-            }
+
+        if (!existingUser || !existingUser.emailVerifiedAt) {
+            this.logger.warn(
+                `Failed login attempt for email ${userInfo.email}`,
+            );
+
             throw new BadRequestError('Email or Password is incorrect.');
         }
-        // Check if account is locked due to too many failed login attempts
-        if (exsistingUser.loginLock && exsistingUser.loginLock > new Date()) {
+
+        if (existingUser.loginUntil && existingUser.loginUntil > new Date()) {
             this.logger.warn(
-                `User with email ${userInfo.email} is locked until ${exsistingUser.loginLock.toISOString()}.`,
-            );
-            throw new BadRequestError(
-                `Account is locked. Please try again after ${exsistingUser.loginLock.toISOString()}.`,
-            );
-        }
-        const isMatch = await comparePassword(
-            userInfo.password,
-            exsistingUser.password,
-        );
-        if (!isMatch) {
-            const loginAttempt = exsistingUser.loginAttempt + 1;
-            if (loginAttempt >= 3) {
-                // Reset login attempt and lock account for 15 minutes
-                await this.authRepository.setLoginAttempt(
-                    exsistingUser.email,
-                    0,
-                );
-                await this.authRepository.setLoginLock(
-                    exsistingUser.email,
-                    new Date(Date.now() + 15 * 60 * 1000),
-                );
-            } else {
-                await this.authRepository.setLoginAttempt(
-                    exsistingUser.email,
-                    loginAttempt,
-                );
-            }
-            this.logger.warn(
-                `User with email ${userInfo.email} not match password ${userInfo.password} attempt ${loginAttempt}.`,
+                `Account locked until ${existingUser.loginUntil.toISOString()} for email ${userInfo.email}`,
             );
             throw new BadRequestError('Email or Password is incorrect.');
         }
 
-        // Reset login attempt and lock
+        const isMatch = await comparePassword(
+            userInfo.password,
+            existingUser.password,
+        );
+
+        if (!isMatch) {
+            const loginAttempt = existingUser.failLoginAttempt + 1;
+
+            await this.loginAttemptHandle({
+                email: userInfo.email,
+                attempt: loginAttempt,
+            });
+
+            this.logger.warn(
+                `Failed login attempt ${loginAttempt} for ${userInfo.email}`,
+            );
+
+            throw new BadRequestError('Email or Password is incorrect.');
+        }
+
         await this.authRepository.resetLoginAttemptAndLock(userInfo.email);
-        const { password: _password, ...user } = exsistingUser;
+
+        const { password: _password, ...user } = existingUser;
+
         return user;
+    }
+
+    async verifyAccount(verifyInfo: { code: string; email: string }) {
+        const { code, email } = verifyInfo;
+
+        const [user] = await this.authRepository.findUserByEmail(email);
+
+        if (!user || user.emailVerifiedAt) {
+            this.logger.warn(`Verification failed for ${email}`);
+            throw new BadRequestError('Verification failed.');
+        }
+
+        const otp = await this.otpRepository.getOtp({
+            otpType: 'email_verification',
+            userId: user.id,
+        });
+
+        if (!otp) {
+            this.logger.warn(`OTP expired for ${email}`);
+            throw new BadRequestError('OTP expired or invalid.');
+        }
+
+        const isMatch = await compareOtp(code, otp.code);
+
+        if (!isMatch) {
+            const attempt = await this.otpRepository.incrementOtpAttempt({
+                otpType: 'email_verification',
+                userId: user.id,
+            });
+
+            this.logger.warn(`Invalid OTP attempt ${attempt} for ${email}`);
+
+            throw new BadRequestError('OTP expired or invalid.');
+        }
+
+        await this.otpRepository.deleteOtp({
+            otpType: 'email_verification',
+            userId: user.id,
+        });
+
+        await this.authRepository.updateUserEmailVerifiedAt(user.id);
     }
 
     async logoutAll(logoutAllInfo: { userId: string; tokenVersion: number }) {
         const { userId, tokenVersion } = logoutAllInfo;
-        const [user] = await this.authRepository.findUserById(userId);
-        if (!user) {
-            this.logger.warn(`User with id ${userId} not found.`);
-            throw new BadRequestError('User not found.');
-        }
 
-        if (user.tokenVersion !== tokenVersion) {
-            this.logger.warn(
-                `User with id ${userId} token version ${user.tokenVersion} not match token version ${tokenVersion}.`,
-            );
-            throw new BadRequestError('Token version is incorrect.');
+        const [user] = await this.authRepository.findUserById(userId);
+
+        if (!user || user.tokenVersion !== tokenVersion) {
+            if (!user) {
+                this.logger.warn(
+                    `Logout all attempt for non-existent user ID ${userId}`,
+                );
+            } else {
+                this.logger.warn(
+                    `Logout all attempt with invalid token version for user ID ${userId}`,
+                );
+            }
+            throw new BadRequestError('Invalid token.');
         }
 
         await this.authRepository.incrementTokenVersion(userId);
@@ -144,55 +170,80 @@ export class AuthService {
         jti: string;
         exp: number;
     }) {
-        const {
-            sub: userId,
-            token_version: tokenVersion,
-            jti,
-            exp,
-        } = logoutInfo;
-        const [user] = await this.authRepository.findUserById(userId);
-        if (!user) {
-            this.logger.warn(`User with id ${userId} not found.`);
-            throw new BadRequestError('User not found.');
-        }
+        const { sub, token_version, jti, exp } = logoutInfo;
 
-        if (user.tokenVersion !== tokenVersion) {
-            this.logger.warn(
-                `User with id ${userId} token version ${user.tokenVersion} not match token version ${tokenVersion}.`,
-            );
-            throw new BadRequestError('Token version is incorrect.');
+        const [user] = await this.authRepository.findUserById(sub);
+
+        if (!user || user.tokenVersion !== token_version) {
+            if (!user) {
+                this.logger.warn(
+                    `Logout attempt for non-existent user ID ${sub}`,
+                );
+            } else {
+                this.logger.warn(
+                    `Logout attempt with invalid token version for user ID ${sub}`,
+                );
+            }
+            throw new BadRequestError('Invalid token.');
         }
 
         const leftTime = Math.ceil(exp - Date.now() / 1000);
+
         if (leftTime > 0) {
-            await redisInstance.set(`jti_${jti}`, 'blacklisted', {
-                expiration: {
-                    type: 'EX',
-                    value: leftTime,
-                },
+            await this.tokenRepository.blacklistToken({
+                jti,
+                exp: leftTime,
             });
         }
     }
 
-    async verifyAccount(verifyInfo: { code: string; email: string }) {
-        const { code, email } = verifyInfo;
-        const [user] = await this.authRepository.findUserByEmail(email);
-        if (!user) {
-            this.logger.warn(`User with email ${email} not found.`);
-            throw new BadRequestError('User not found.');
-        }
-        if (user.isVerified) {
-            this.logger.warn(`User with email ${email} is already verified.`);
-            throw new BadRequestError('User is already verified.');
-        }
-        const otp = await this.authRepository.verifyUser(user.id, code);
-        if (!otp) {
-            this.logger.warn(
-                `User with email ${email} not found otp with code ${code}.`,
+    private async sendVerificationOtp(user: {
+        id: string;
+        username: string;
+        email: string;
+    }) {
+        const code = generateOTP(6);
+
+        const hashedCode = await hashOtp(code);
+
+        await this.otpRepository.createOtp({
+            userId: user.id,
+            code: hashedCode,
+            otpType: 'email_verification',
+        });
+
+        await sendToQueue('signup_email', {
+            username: user.username,
+            email: user.email,
+            code,
+        });
+    }
+
+    private async loginAttemptHandle(loginAttemptInfo: {
+        email: string;
+        attempt: number;
+    }) {
+        const { email, attempt } = loginAttemptInfo;
+
+        let lockUntil: Date | null = null;
+
+        if (attempt >= AUTH_LIMITS.LOGIN_LOCK_3_THRESHOLD) {
+            lockUntil = new Date(
+                Date.now() + AUTH_LIMITS.LOGIN_LOCK_3_DURATION_MS,
             );
-            throw new BadRequestError('OTP is incorrect.');
+        } else if (attempt >= AUTH_LIMITS.LOGIN_LOCK_2_THRESHOLD) {
+            lockUntil = new Date(
+                Date.now() + AUTH_LIMITS.LOGIN_LOCK_2_DURATION_MS,
+            );
+        } else if (attempt >= AUTH_LIMITS.LOGIN_LOCK_1_THRESHOLD) {
+            lockUntil = new Date(
+                Date.now() + AUTH_LIMITS.LOGIN_LOCK_1_DURATION_MS,
+            );
         }
-        await this.authRepository.deleteOtpByUserId(user.id, code);
-        return;
+
+        await this.authRepository.updateLoginSecurityState(email, {
+            attempt,
+            lockUntil,
+        });
     }
 }

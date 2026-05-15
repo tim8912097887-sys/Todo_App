@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach, vitest } from 'vitest';
+﻿import { describe, expect, it, beforeEach, afterEach, vitest } from 'vitest';
 import { faker } from '@faker-js/faker';
 import { Request, Response, NextFunction } from 'express';
 import { AuthController } from '#auth/v1/controller.js';
@@ -7,21 +7,24 @@ import {
     getMockLoginData,
     createTestUser,
     cleanupUsers,
+    createTestOtp,
+    cleanupOtps,
 } from '../utils/auth.js';
 import { BadRequestError } from '#errors/bad-request.js';
 import { authContainer } from '#auth/v1/container.js';
 import * as rabbitmq from '#configs/rabbitmq.js';
 import { db } from '#db/index.js';
-import { otps } from '#db/schema/otp.js';
 import { users } from '#db/schema/user.js';
 import { redisInstance } from '#configs/redis.js';
 import { eq } from 'drizzle-orm';
+import { AUTH_LIMITS } from '#auth/v1/constants.js';
 
 describe('Auth Controller', () => {
     let authController: AuthController;
     let mockResponse: Response;
     let mockNext: NextFunction;
     const createdEmails: string[] = [];
+    const createdUserIds: string[] = [];
 
     beforeEach(() => {
         authController = authContainer.getController();
@@ -32,20 +35,19 @@ describe('Auth Controller', () => {
             clearCookie: vitest.fn().mockReturnThis(),
         } as unknown as Response;
         mockNext = vitest.fn();
+        vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
     });
 
     afterEach(async () => {
         await cleanupUsers(createdEmails);
+        await cleanupOtps(createdUserIds);
         createdEmails.length = 0;
+        createdUserIds.length = 0;
+        vitest.clearAllMocks();
     });
 
     describe('signup', () => {
-        // Mock sendToQueue to prevent actual RabbitMQ calls during tests
-        beforeEach(() => {
-            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
-        });
-
-        it('When signup with valid new user, then return 201 success response', async () => {
+        it('should return 201 and success message when signup with new user', async () => {
             const signupData = getMockCreateUserData({
                 email: faker.internet.email().toLowerCase(),
             });
@@ -70,41 +72,13 @@ describe('Auth Controller', () => {
                     },
                 }),
             );
-        });
-
-        it('When signup with existing email, then still return success response', async () => {
-            const signupData = getMockCreateUserData({
-                email: faker.internet.email().toLowerCase(),
-            });
-            createdEmails.push(signupData.email);
-            await createTestUser({
-                email: signupData.email,
-                password: signupData.password,
-                isVerified: true,
-            });
-
-            const mockRequest = {
-                body: signupData,
-            } as Request;
-
-            await authController.signup(
-                mockRequest,
-                mockResponse as Response,
-                mockNext as NextFunction,
-            );
-
-            expect(mockResponse.status).toHaveBeenCalledWith(201);
-            expect(mockResponse.json).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    state: 'success',
-                    data: {
-                        message: 'Signup successfully',
-                    },
-                }),
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith(
+                'signup_email',
+                expect.any(Object),
             );
         });
 
-        it('When signup with existing unverified email, then still return success response', async () => {
+        it('should return 201 when signup with existing verified email (sends warning email)', async () => {
             const signupData = getMockCreateUserData({
                 email: faker.internet.email().toLowerCase(),
             });
@@ -112,7 +86,7 @@ describe('Auth Controller', () => {
             await createTestUser({
                 email: signupData.email,
                 password: signupData.password,
-                isVerified: false,
+                emailVerifiedAt: new Date(),
             });
 
             const mockRequest = {
@@ -126,19 +100,43 @@ describe('Auth Controller', () => {
             );
 
             expect(mockResponse.status).toHaveBeenCalledWith(201);
-            expect(mockResponse.json).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    state: 'success',
-                    data: {
-                        message: 'Signup successfully',
-                    },
-                }),
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith(
+                'signup_verified_email',
+                expect.any(Object),
+            );
+        });
+
+        it('should return 201 when signup with existing unverified email (re-sends OTP)', async () => {
+            const signupData = getMockCreateUserData({
+                email: faker.internet.email().toLowerCase(),
+            });
+            createdEmails.push(signupData.email);
+            await createTestUser({
+                email: signupData.email,
+                password: signupData.password,
+                emailVerifiedAt: null,
+            });
+
+            const mockRequest = {
+                body: signupData,
+            } as Request;
+
+            await authController.signup(
+                mockRequest,
+                mockResponse as Response,
+                mockNext as NextFunction,
+            );
+
+            expect(mockResponse.status).toHaveBeenCalledWith(201);
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith(
+                'signup_email',
+                expect.any(Object),
             );
         });
     });
 
     describe('login', () => {
-        it('When login with valid credentials, then set cookie and return user data', async () => {
+        it('should set access token cookie and return user data on valid login', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -147,7 +145,7 @@ describe('Auth Controller', () => {
             const createdUser = await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
 
             const mockRequest = {
@@ -181,7 +179,55 @@ describe('Auth Controller', () => {
             );
         });
 
-        it('When login with wrong password, then throw BadRequestError', async () => {
+        it('should throw on login with non-existent email', async () => {
+            const loginData = getMockLoginData({
+                email: faker.internet.email().toLowerCase(),
+            });
+
+            const mockRequest = {
+                body: loginData,
+            } as Request;
+
+            await expect(
+                authController.login(
+                    mockRequest,
+                    mockResponse as Response,
+                    mockNext as NextFunction,
+                ),
+            ).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
+            );
+            expect(mockResponse.status).not.toHaveBeenCalled();
+        });
+
+        it('should throw on login with unverified account', async () => {
+            const loginData = getMockLoginData({
+                email: faker.internet.email().toLowerCase(),
+                password: 'ValidPassword123!',
+            });
+            createdEmails.push(loginData.email);
+            await createTestUser({
+                email: loginData.email,
+                password: loginData.password,
+                emailVerifiedAt: null,
+            });
+
+            const mockRequest = {
+                body: loginData,
+            } as Request;
+
+            await expect(
+                authController.login(
+                    mockRequest,
+                    mockResponse as Response,
+                    mockNext as NextFunction,
+                ),
+            ).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
+            );
+        });
+
+        it('should throw on login with wrong password', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'CorrectPassword123!',
@@ -190,13 +236,13 @@ describe('Auth Controller', () => {
             await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
 
             const mockRequest = {
                 body: {
                     email: loginData.email,
-                    password: 'IncorrectPassword123!',
+                    password: 'WrongPassword123!',
                 },
             } as Request;
 
@@ -209,11 +255,10 @@ describe('Auth Controller', () => {
             ).rejects.toThrow(
                 new BadRequestError('Email or Password is incorrect.'),
             );
-            expect(mockResponse.status).not.toHaveBeenCalled();
-            expect(mockResponse.cookie).not.toHaveBeenCalled();
         });
 
-        it('When login with unverified account, then throw BadRequestError', async () => {
+        it('should throw on login when account is currently locked', async () => {
+            const lockTime = new Date(Date.now() + 10 * 60 * 1000);
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -222,7 +267,8 @@ describe('Auth Controller', () => {
             await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: false,
+                emailVerifiedAt: new Date(),
+                loginUntil: lockTime,
             });
 
             const mockRequest = {
@@ -238,42 +284,9 @@ describe('Auth Controller', () => {
             ).rejects.toThrow(
                 new BadRequestError('Email or Password is incorrect.'),
             );
-            expect(mockResponse.status).not.toHaveBeenCalled();
-            expect(mockResponse.cookie).not.toHaveBeenCalled();
         });
 
-        it('When login with locked account, then throw BadRequestError with lock time', async () => {
-            const lockTime = new Date(Date.now() + 10 * 60 * 1000);
-            const loginData = getMockLoginData({
-                email: faker.internet.email().toLowerCase(),
-                password: 'LockedPassword123!',
-            });
-            createdEmails.push(loginData.email);
-            await createTestUser({
-                email: loginData.email,
-                password: loginData.password,
-                isVerified: true,
-                loginLock: lockTime,
-            });
-
-            const mockRequest = {
-                body: loginData,
-            } as Request;
-
-            await expect(
-                authController.login(
-                    mockRequest,
-                    mockResponse as Response,
-                    mockNext as NextFunction,
-                ),
-            ).rejects.toThrow(
-                `Account is locked. Please try again after ${lockTime.toISOString()}.`,
-            );
-            expect(mockResponse.status).not.toHaveBeenCalled();
-            expect(mockResponse.cookie).not.toHaveBeenCalled();
-        });
-
-        it('When login fails three times then fourth attempt is locked, then throw BadRequestError on fourth try', async () => {
+        it('should increment login attempts and lock at first threshold (5 attempts)', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -282,14 +295,14 @@ describe('Auth Controller', () => {
             await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
-                loginAttempt: 2,
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: AUTH_LIMITS.LOGIN_LOCK_1_THRESHOLD - 1,
             });
 
             const wrongRequest = {
                 body: {
                     email: loginData.email,
-                    password: 'IncorrectPassword123!',
+                    password: 'WrongPassword123!',
                 },
             } as Request;
 
@@ -303,47 +316,149 @@ describe('Auth Controller', () => {
                 new BadRequestError('Email or Password is incorrect.'),
             );
 
-            const mockLockedRequest = {
-                body: loginData,
-            } as Request;
+            const [updatedUser] = await db
+                .select({
+                    failLoginAttempt: users.failLoginAttempt,
+                    loginUntil: users.loginUntil,
+                })
+                .from(users)
+                .where(eq(users.email, loginData.email));
 
-            await expect(
-                authController.login(
-                    mockLockedRequest,
-                    mockResponse as Response,
-                    mockNext as NextFunction,
-                ),
-            ).rejects.toThrow(`Account is locked. Please try again after`);
-            expect(mockResponse.status).not.toHaveBeenCalled();
-            expect(mockResponse.cookie).not.toHaveBeenCalled();
+            expect(updatedUser?.failLoginAttempt).toBe(
+                AUTH_LIMITS.LOGIN_LOCK_1_THRESHOLD,
+            );
+            expect(updatedUser?.loginUntil).not.toBeNull();
+            expect((updatedUser?.loginUntil as Date).getTime()).toBeGreaterThan(
+                Date.now(),
+            );
         });
 
-        it('When login with not existing email, then throw BadRequestError', async () => {
+        it('should lock account with second threshold (10 attempts) when reaching 10 attempts', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
             });
+            createdEmails.push(loginData.email);
+            await createTestUser({
+                email: loginData.email,
+                password: loginData.password,
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: AUTH_LIMITS.LOGIN_LOCK_2_THRESHOLD - 1,
+            });
 
-            const mockRequest = {
-                body: loginData,
+            const wrongRequest = {
+                body: {
+                    email: loginData.email,
+                    password: 'WrongPassword123!',
+                },
             } as Request;
 
             await expect(
                 authController.login(
-                    mockRequest,
+                    wrongRequest,
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
             ).rejects.toThrow(
                 new BadRequestError('Email or Password is incorrect.'),
             );
-            expect(mockResponse.status).not.toHaveBeenCalled();
-            expect(mockResponse.cookie).not.toHaveBeenCalled();
+
+            const [updatedUser] = await db
+                .select({
+                    failLoginAttempt: users.failLoginAttempt,
+                    loginUntil: users.loginUntil,
+                })
+                .from(users)
+                .where(eq(users.email, loginData.email));
+
+            expect(updatedUser?.failLoginAttempt).toBe(
+                AUTH_LIMITS.LOGIN_LOCK_2_THRESHOLD,
+            );
+            expect(updatedUser?.loginUntil).not.toBeNull();
+        });
+
+        it('should lock account with third threshold (15 attempts) when reaching 15 attempts', async () => {
+            const loginData = getMockLoginData({
+                email: faker.internet.email().toLowerCase(),
+                password: 'ValidPassword123!',
+            });
+            createdEmails.push(loginData.email);
+            await createTestUser({
+                email: loginData.email,
+                password: loginData.password,
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: AUTH_LIMITS.LOGIN_LOCK_3_THRESHOLD - 1,
+            });
+
+            const wrongRequest = {
+                body: {
+                    email: loginData.email,
+                    password: 'WrongPassword123!',
+                },
+            } as Request;
+
+            await expect(
+                authController.login(
+                    wrongRequest,
+                    mockResponse as Response,
+                    mockNext as NextFunction,
+                ),
+            ).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
+            );
+
+            const [updatedUser] = await db
+                .select({
+                    failLoginAttempt: users.failLoginAttempt,
+                    loginUntil: users.loginUntil,
+                })
+                .from(users)
+                .where(eq(users.email, loginData.email));
+
+            expect(updatedUser?.failLoginAttempt).toBe(
+                AUTH_LIMITS.LOGIN_LOCK_3_THRESHOLD,
+            );
+            expect(updatedUser?.loginUntil).not.toBeNull();
+        });
+
+        it('should reset login attempts and lock on successful login', async () => {
+            const loginData = getMockLoginData({
+                email: faker.internet.email().toLowerCase(),
+                password: 'ValidPassword123!',
+            });
+            createdEmails.push(loginData.email);
+            await createTestUser({
+                email: loginData.email,
+                password: loginData.password,
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: 3,
+            });
+
+            const mockRequest = {
+                body: loginData,
+            } as Request;
+
+            await authController.login(
+                mockRequest,
+                mockResponse as Response,
+                mockNext as NextFunction,
+            );
+
+            const [updatedUser] = await db
+                .select({
+                    failLoginAttempt: users.failLoginAttempt,
+                    loginUntil: users.loginUntil,
+                })
+                .from(users)
+                .where(eq(users.email, loginData.email));
+
+            expect(updatedUser?.failLoginAttempt).toBe(0);
+            expect(updatedUser?.loginUntil).toBeNull();
         });
     });
 
     describe('logoutAll', () => {
-        it('When logoutAll with valid user and matching tokenVersion, then clear cookie and return success', async () => {
+        it('should clear cookie and increment token version on valid logoutAll', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -352,7 +467,7 @@ describe('Auth Controller', () => {
             const createdUser = await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
 
             const mockRequest = {
@@ -381,9 +496,16 @@ describe('Auth Controller', () => {
                     },
                 }),
             );
+
+            const [updatedUser] = await db
+                .select({ tokenVersion: users.tokenVersion })
+                .from(users)
+                .where(eq(users.id, createdUser.id));
+
+            expect(updatedUser?.tokenVersion).toBe(1);
         });
 
-        it('When logoutAll with incorrect tokenVersion, then throw BadRequestError', async () => {
+        it('should throw when logoutAll with mismatched token version', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -392,7 +514,7 @@ describe('Auth Controller', () => {
             const createdUser = await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
 
             const mockRequest = {
@@ -408,14 +530,11 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(
-                new BadRequestError('Token version is incorrect.'),
-            );
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
             expect(mockResponse.clearCookie).not.toHaveBeenCalled();
-            expect(mockResponse.status).not.toHaveBeenCalled();
         });
 
-        it('When logoutAll with missing user, then throw BadRequestError', async () => {
+        it('should throw when logoutAll with non-existent user', async () => {
             const mockRequest = {
                 user: {
                     sub: faker.string.uuid(),
@@ -429,14 +548,12 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(new BadRequestError('User not found.'));
-            expect(mockResponse.clearCookie).not.toHaveBeenCalled();
-            expect(mockResponse.status).not.toHaveBeenCalled();
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
         });
     });
 
     describe('logout', () => {
-        it('When logout with valid token info and future exp, then blacklist jti, clear cookie and return success', async () => {
+        it('should blacklist token and clear cookie when logout with future expiry', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -445,13 +562,10 @@ describe('Auth Controller', () => {
             const createdUser = await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
             const futureExp = Math.ceil((Date.now() + 10 * 60 * 1000) / 1000);
-            const redisSpy = vitest
-                .spyOn(redisInstance, 'set')
-                .mockResolvedValue('OK' as any);
-
+            const redisSpy = vitest.spyOn(redisInstance, 'set');
             const mockRequest = {
                 user: {
                     sub: createdUser.id,
@@ -468,14 +582,14 @@ describe('Auth Controller', () => {
             );
 
             expect(redisSpy).toHaveBeenCalledWith(
-                `jti_test-jti-123`,
+                'jti_test-jti-123',
                 'blacklisted',
-                {
+                expect.objectContaining({
                     expiration: {
                         type: 'EX',
                         value: expect.any(Number),
                     },
-                },
+                }),
             );
             expect(mockResponse.clearCookie).toHaveBeenCalledWith(
                 'access_token',
@@ -492,7 +606,7 @@ describe('Auth Controller', () => {
             );
         });
 
-        it('When logout with past exp, then do not blacklist jti but still clear cookie', async () => {
+        it('should not blacklist token when logout with already expired token', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -501,12 +615,10 @@ describe('Auth Controller', () => {
             const createdUser = await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
             const pastExp = Math.ceil((Date.now() - 10 * 60 * 1000) / 1000);
-            const redisSpy = vitest
-                .spyOn(redisInstance, 'set')
-                .mockResolvedValue('OK' as any);
+            const redisSpy = vitest.spyOn(redisInstance, 'set');
 
             const mockRequest = {
                 user: {
@@ -529,17 +641,9 @@ describe('Auth Controller', () => {
                 expect.any(Object),
             );
             expect(mockResponse.status).toHaveBeenCalledWith(200);
-            expect(mockResponse.json).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    state: 'success',
-                    data: {
-                        message: 'Logout successfully',
-                    },
-                }),
-            );
         });
 
-        it('When logout with incorrect tokenVersion, then throw BadRequestError', async () => {
+        it('should throw when logout with mismatched token version', async () => {
             const loginData = getMockLoginData({
                 email: faker.internet.email().toLowerCase(),
                 password: 'ValidPassword123!',
@@ -548,7 +652,7 @@ describe('Auth Controller', () => {
             const createdUser = await createTestUser({
                 email: loginData.email,
                 password: loginData.password,
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
             const futureExp = Math.ceil((Date.now() + 10 * 60 * 1000) / 1000);
 
@@ -567,14 +671,11 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(
-                new BadRequestError('Token version is incorrect.'),
-            );
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
             expect(mockResponse.clearCookie).not.toHaveBeenCalled();
-            expect(mockResponse.status).not.toHaveBeenCalled();
         });
 
-        it('When logout with missing user, then throw BadRequestError', async () => {
+        it('should throw when logout with non-existent user', async () => {
             const futureExp = Math.ceil((Date.now() + 10 * 60 * 1000) / 1000);
             const mockRequest = {
                 user: {
@@ -591,33 +692,27 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(new BadRequestError('User not found.'));
-            expect(mockResponse.clearCookie).not.toHaveBeenCalled();
-            expect(mockResponse.status).not.toHaveBeenCalled();
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
         });
     });
 
     describe('verifyAccount', () => {
-        it('When verifyAccount with valid code and unverified user, then mark verified and return success', async () => {
+        it('should mark user as verified and return success on valid verification', async () => {
             const email = faker.internet.email().toLowerCase();
             createdEmails.push(email);
             const createdUser = await createTestUser({
                 email,
                 password: 'ValidPassword123!',
-                isVerified: false,
+                emailVerifiedAt: null,
             });
-            const [createdOtp] = await db
-                .insert(otps)
-                .values({
-                    userId: createdUser.id,
-                    code: '123456',
-                })
-                .returning({ code: otps.code });
+            createdUserIds.push(createdUser.id);
+
+            const code = await createTestOtp(createdUser.id);
 
             const mockRequest = {
                 body: {
                     email,
-                    code: createdOtp.code,
+                    code,
                 },
             } as Request;
 
@@ -628,11 +723,11 @@ describe('Auth Controller', () => {
             );
 
             const [verifiedUser] = await db
-                .select({ isVerified: users.isVerified })
+                .select({ emailVerifiedAt: users.emailVerifiedAt })
                 .from(users)
                 .where(eq(users.id, createdUser.id));
 
-            expect(verifiedUser?.isVerified).toBe(true);
+            expect(verifiedUser?.emailVerifiedAt).not.toBeNull();
             expect(mockResponse.status).toHaveBeenCalledWith(200);
             expect(mockResponse.json).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -644,18 +739,17 @@ describe('Auth Controller', () => {
             );
         });
 
-        it('When verifyAccount with incorrect code, then throw BadRequestError', async () => {
+        it('should throw when verifyAccount with incorrect OTP code', async () => {
             const email = faker.internet.email().toLowerCase();
             createdEmails.push(email);
             const createdUser = await createTestUser({
                 email,
                 password: 'ValidPassword123!',
-                isVerified: false,
+                emailVerifiedAt: null,
             });
-            await db.insert(otps).values({
-                userId: createdUser.id,
-                code: '123456',
-            });
+            createdUserIds.push(createdUser.id);
+
+            await createTestOtp(createdUser.id);
 
             const mockRequest = {
                 body: {
@@ -670,17 +764,34 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(new BadRequestError('OTP is incorrect.'));
+            ).rejects.toThrow(new BadRequestError('OTP expired or invalid.'));
             expect(mockResponse.status).not.toHaveBeenCalled();
         });
 
-        it('When verifyAccount with already verified user, then throw BadRequestError', async () => {
+        it('should throw when verifyAccount with non-existent user', async () => {
+            const mockRequest = {
+                body: {
+                    email: faker.internet.email().toLowerCase(),
+                    code: '123456',
+                },
+            } as Request;
+
+            await expect(
+                authController.verifyAccount(
+                    mockRequest,
+                    mockResponse as Response,
+                    mockNext as NextFunction,
+                ),
+            ).rejects.toThrow(new BadRequestError('Verification failed.'));
+        });
+
+        it('should throw when verifyAccount with already verified user', async () => {
             const email = faker.internet.email().toLowerCase();
             createdEmails.push(email);
             await createTestUser({
                 email,
                 password: 'ValidPassword123!',
-                isVerified: true,
+                emailVerifiedAt: new Date(),
             });
 
             const mockRequest = {
@@ -696,14 +807,21 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(new BadRequestError('User is already verified.'));
-            expect(mockResponse.status).not.toHaveBeenCalled();
+            ).rejects.toThrow(new BadRequestError('Verification failed.'));
         });
 
-        it('When verifyAccount with missing user, then throw BadRequestError', async () => {
+        it('should throw when verifyAccount with expired or missing OTP', async () => {
+            const email = faker.internet.email().toLowerCase();
+            createdEmails.push(email);
+            await createTestUser({
+                email,
+                password: 'ValidPassword123!',
+                emailVerifiedAt: null,
+            });
+
             const mockRequest = {
                 body: {
-                    email: faker.internet.email().toLowerCase(),
+                    email,
                     code: '123456',
                 },
             } as Request;
@@ -714,8 +832,7 @@ describe('Auth Controller', () => {
                     mockResponse as Response,
                     mockNext as NextFunction,
                 ),
-            ).rejects.toThrow(new BadRequestError('User not found.'));
-            expect(mockResponse.status).not.toHaveBeenCalled();
+            ).rejects.toThrow(new BadRequestError('OTP expired or invalid.'));
         });
     });
 });

@@ -1,125 +1,152 @@
+﻿import { describe, expect, it, beforeEach, vitest, type Mocked } from 'vitest';
 import { AuthService } from '#auth/v1/service.js';
-import { AuthRepository } from '#auth/v1/repository.js';
+import { AuthRepository } from '#auth/v1/repository/auth.js';
+import { OtpRepository } from '#auth/v1/repository/otp.js';
+import { TokenRepository } from '#auth/v1/repository/token.js';
 import { BadRequestError } from '#errors/bad-request.js';
-import { describe, expect, it, type Mocked, vitest, beforeEach } from 'vitest';
-import {
-    getMockCreateUserData,
-    getMockLoginData,
-    getMockUser,
-} from '../utils/auth.js';
 import * as passwordUtil from '#utils/password.js';
+import * as otpUtil from '#utils/otp.js';
 import * as rabbitmq from '#configs/rabbitmq.js';
-import * as redisConfig from '#configs/redis.js';
+import { CreateUserType } from '#auth/v1/schemas/signup.js';
+import { LoginUserType } from '#auth/v1/schemas/login.js';
+import { AUTH_LIMITS } from '#auth/v1/constants.js';
+
+const makeAuthUser = (overrides: Partial<Record<string, any>> = {}) => ({
+    id: 'user-id',
+    email: 'user@example.com',
+    username: 'testuser',
+    password: 'hashed-password',
+    emailVerifiedAt: new Date(),
+    failLoginAttempt: 0,
+    loginUntil: null,
+    tokenVersion: 0,
+    ...overrides,
+});
+
+const makeCreateUserData = (
+    overrides: Partial<CreateUserType> = {},
+): CreateUserType => ({
+    username: 'testuser',
+    email: 'newuser@example.com',
+    password: 'SecurePassword123!',
+    ...overrides,
+});
+
+const makeLoginData = (
+    overrides: Partial<LoginUserType> = {},
+): LoginUserType => ({
+    email: 'user@example.com',
+    password: 'SecurePassword123!',
+    ...overrides,
+});
 
 describe('Auth Service', () => {
     let mockAuthRepository: Mocked<AuthRepository>;
+    let mockOtpRepository: Mocked<OtpRepository>;
+    let mockTokenRepository: Mocked<TokenRepository>;
     let authService: AuthService;
 
     beforeEach(() => {
+        vitest.restoreAllMocks();
+
         mockAuthRepository = {
             findUserByEmail: vitest.fn(),
             createUser: vitest.fn(),
             findUserById: vitest.fn(),
-            setLoginAttempt: vitest.fn(),
-            setLoginLock: vitest.fn(),
+            updateLoginSecurityState: vitest.fn(),
             resetLoginAttemptAndLock: vitest.fn(),
-            deleteUserById: vitest.fn(),
-            createOtp: vitest.fn(),
             incrementTokenVersion: vitest.fn(),
-            verifyUser: vitest.fn(),
-            deleteOtpByUserId: vitest.fn(),
+            updateUserEmailVerifiedAt: vitest.fn(),
         } as unknown as Mocked<AuthRepository>;
 
-        authService = new AuthService(mockAuthRepository);
+        mockOtpRepository = {
+            createOtp: vitest.fn(),
+            getOtp: vitest.fn(),
+            incrementOtpAttempt: vitest.fn(),
+            deleteOtp: vitest.fn(),
+        } as unknown as Mocked<OtpRepository>;
+
+        mockTokenRepository = {
+            blacklistToken: vitest.fn(),
+        } as unknown as Mocked<TokenRepository>;
+
+        authService = new AuthService(
+            mockAuthRepository,
+            mockOtpRepository,
+            mockTokenRepository,
+        );
     });
 
     describe('signup', () => {
-        it('When signup with valid user info and email does not exist, then return created user', async () => {
-            // Arrange
-            const mockCreateData = getMockCreateUserData();
-            const mockCreatedUser = {
-                id: '123',
+        it('creates a new user, stores verification OTP, and sends signup email', async () => {
+            const mockCreateData = makeCreateUserData();
+            const createdUser = {
+                id: 'created-user-id',
                 email: mockCreateData.email,
                 username: mockCreateData.username,
             };
-            mockAuthRepository.findUserByEmail.mockResolvedValue([]);
-            mockAuthRepository.createUser.mockResolvedValue([mockCreatedUser]);
-            mockAuthRepository.createOtp.mockResolvedValue([
-                { code: '123456' },
-            ]);
+
+            vitest
+                .spyOn(passwordUtil, 'hashPassword')
+                .mockResolvedValue('hashed-password');
+            vitest.spyOn(otpUtil, 'generateOTP').mockReturnValue('123456');
+            vitest.spyOn(otpUtil, 'hashOtp').mockResolvedValue('hashed-otp');
             vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
 
-            // Act
+            mockAuthRepository.findUserByEmail.mockResolvedValue([]);
+            mockAuthRepository.createUser.mockResolvedValue([createdUser]);
+            mockOtpRepository.createOtp.mockResolvedValue('OK');
+
             const result = await authService.signup(mockCreateData);
 
-            // Assert
             expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
                 mockCreateData.email,
             );
-            expect(mockAuthRepository.createUser).toHaveBeenCalled();
-            expect(mockAuthRepository.createOtp).toHaveBeenCalled();
-            expect(result).toEqual(mockCreatedUser);
+            expect(passwordUtil.hashPassword).toHaveBeenCalledWith(
+                mockCreateData.password,
+            );
+            expect(mockAuthRepository.createUser).toHaveBeenCalledWith({
+                ...mockCreateData,
+                password: 'hashed-password',
+            });
+            expect(mockOtpRepository.createOtp).toHaveBeenCalledWith({
+                userId: createdUser.id,
+                code: 'hashed-otp',
+                otpType: 'email_verification',
+            });
             expect(rabbitmq.sendToQueue).toHaveBeenCalledWith('signup_email', {
-                username: mockCreatedUser.username,
-                email: mockCreatedUser.email,
+                username: createdUser.username,
+                email: createdUser.email,
                 code: '123456',
             });
+            expect(result).toEqual(createdUser);
         });
 
-        it('When signup with email that exists and user is verified, then return undefined', async () => {
-            // Arrange
-            const mockCreateData = getMockCreateUserData();
-            const existingUser = getMockUser({
+        it('re-sends verification OTP when user exists but is not verified', async () => {
+            const mockCreateData = makeCreateUserData();
+            const existingUser = makeAuthUser({
                 email: mockCreateData.email,
-                isVerified: true,
+                emailVerifiedAt: null,
             });
+
+            vitest.spyOn(otpUtil, 'generateOTP').mockReturnValue('123456');
+            vitest.spyOn(otpUtil, 'hashOtp').mockResolvedValue('hashed-otp');
+            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
+
             mockAuthRepository.findUserByEmail.mockResolvedValue([
                 existingUser,
             ]);
-            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
+            mockOtpRepository.createOtp.mockResolvedValue('OK');
 
-            // Act
             const result = await authService.signup(mockCreateData);
 
-            // Assert
-            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
-                mockCreateData.email,
-            );
-            expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
             expect(result).toBeUndefined();
-            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith(
-                'signup_verified_email',
-                {
-                    username: existingUser.username,
-                    email: existingUser.email,
-                },
-            );
-        });
-
-        it('When signup with email that exists but user is not verified, then return undefined', async () => {
-            // Arrange
-            const mockCreateData = getMockCreateUserData();
-            const existingUser = getMockUser({
-                email: mockCreateData.email,
-                isVerified: false,
+            expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
+            expect(mockOtpRepository.createOtp).toHaveBeenCalledWith({
+                userId: existingUser.id,
+                code: 'hashed-otp',
+                otpType: 'email_verification',
             });
-            mockAuthRepository.findUserByEmail.mockResolvedValue([
-                existingUser,
-            ]);
-            mockAuthRepository.createOtp.mockResolvedValue([
-                { code: '123456' },
-            ]);
-            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
-
-            // Act
-            const result = await authService.signup(mockCreateData);
-
-            // Assert
-            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
-                mockCreateData.email,
-            );
-            expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
-            expect(result).toBeUndefined();
             expect(rabbitmq.sendToQueue).toHaveBeenCalledWith('signup_email', {
                 username: existingUser.username,
                 email: existingUser.email,
@@ -127,674 +154,431 @@ describe('Auth Service', () => {
             });
         });
 
-        it('When signup and repository error occurs during findUserByEmail, then throw error', async () => {
-            // Arrange
-            const mockCreateData = getMockCreateUserData();
-            mockAuthRepository.findUserByEmail.mockRejectedValue(
-                new Error('Database connection error'),
-            );
+        it('does not create a user and sends signup_verified_email when existing user is already verified', async () => {
+            const mockCreateData = makeCreateUserData();
+            const existingUser = makeAuthUser({
+                email: mockCreateData.email,
+                emailVerifiedAt: new Date(),
+            });
 
-            // Act & Assert
-            await expect(authService.signup(mockCreateData)).rejects.toThrow(
-                'Database connection error',
-            );
+            vitest.spyOn(rabbitmq, 'sendToQueue').mockResolvedValue(undefined);
+
+            mockAuthRepository.findUserByEmail.mockResolvedValue([
+                existingUser,
+            ]);
+
+            const result = await authService.signup(mockCreateData);
+
+            expect(result).toBeUndefined();
             expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
+            expect(mockOtpRepository.createOtp).not.toHaveBeenCalled();
+            expect(rabbitmq.sendToQueue).toHaveBeenCalledWith(
+                'signup_verified_email',
+                {
+                    email: existingUser.email,
+                    username: existingUser.username,
+                },
+            );
         });
 
-        it('When signup and repository error occurs during createUser, then throw error', async () => {
-            // Arrange
-            const mockCreateData = getMockCreateUserData();
-            mockAuthRepository.findUserByEmail.mockResolvedValue([]);
-            mockAuthRepository.createUser.mockRejectedValue(
-                new Error('Failed to create user'),
+        it('propagates repository errors during signup', async () => {
+            const mockCreateData = makeCreateUserData();
+            mockAuthRepository.findUserByEmail.mockRejectedValue(
+                new Error('Database error'),
             );
 
-            // Act & Assert
             await expect(authService.signup(mockCreateData)).rejects.toThrow(
-                'Failed to create user',
+                'Database error',
             );
-            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
-                mockCreateData.email,
-            );
+            expect(mockAuthRepository.createUser).not.toHaveBeenCalled();
         });
     });
 
     describe('login', () => {
-        it('When login with valid credentials for verified user, then return user without password', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            const hashedPassword = await passwordUtil.hashPassword(
-                mockLoginData.password,
-            );
-            const mockUser = getMockUser({
+        it('returns user without password for valid verified credentials', async () => {
+            const mockLoginData = makeLoginData({ email: 'valid@example.com' });
+            const existingUser = makeAuthUser({
                 email: mockLoginData.email,
-                isVerified: true,
-                loginAttempt: 0,
-                loginLock: null,
+                password: 'hashed-password',
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: 0,
+                loginUntil: null,
             });
+
             mockAuthRepository.findUserByEmail.mockResolvedValue([
-                { ...mockUser, password: hashedPassword },
+                existingUser,
             ]);
-            mockAuthRepository.resetLoginAttemptAndLock.mockResolvedValue({
-                rowCount: 1,
-            } as any);
-            const comparePasswordSpy = vitest
-                .spyOn(passwordUtil, 'comparePassword')
-                .mockResolvedValue(true);
-
-            // Act
-            const result = await authService.login(mockLoginData);
-
-            // Assert
-            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
-                mockLoginData.email,
-            );
-            expect(comparePasswordSpy).toHaveBeenCalledWith(
-                mockLoginData.password,
-                hashedPassword,
-            );
-            expect(
-                mockAuthRepository.resetLoginAttemptAndLock,
-            ).toHaveBeenCalledWith(mockLoginData.email);
-            expect(result).not.toHaveProperty('password');
-            expect(result).toEqual(
-                expect.objectContaining({
-                    id: mockUser.id,
-                    email: mockUser.email,
-                    username: mockUser.username,
-                }),
-            );
-        });
-
-        it('When login with non-existing user email, then throw BadRequestError', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            mockAuthRepository.findUserByEmail.mockResolvedValue([]);
-
-            // Act & Assert
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                new BadRequestError('Email or Password is incorrect.'),
-            );
-            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
-                mockLoginData.email,
-            );
-        });
-
-        it('When login with unverified user, then throw BadRequestError', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            const unverifiedUser = getMockUser({
-                email: mockLoginData.email,
-                isVerified: false,
-            });
-            mockAuthRepository.findUserByEmail.mockResolvedValue([
-                unverifiedUser,
-            ]);
-
-            // Act & Assert
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                new BadRequestError('Email or Password is incorrect.'),
-            );
-        });
-
-        it('When login with account locked, then throw BadRequestError with lock time', async () => {
-            // Arrange
-            const lockTime = new Date(Date.now() + 10 * 60 * 1000);
-            const mockLoginData = getMockLoginData();
-            const lockedUser = getMockUser({
-                email: mockLoginData.email,
-                isVerified: true,
-                loginLock: lockTime,
-            });
-            mockAuthRepository.findUserByEmail.mockResolvedValue([lockedUser]);
-
-            // Act & Assert
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                BadRequestError,
-            );
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                `Account is locked. Please try again after ${lockTime.toISOString()}.`,
-            );
-        });
-
-        it('When login with wrong password on first attempt, then increment login attempt', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            const hashedPassword = await passwordUtil.hashPassword(
-                'CorrectPassword123!',
-            );
-            const mockUser = getMockUser({
-                email: mockLoginData.email,
-                isVerified: true,
-                loginAttempt: 0,
-                loginLock: null,
-            });
-            mockAuthRepository.findUserByEmail.mockResolvedValue([
-                { ...mockUser, password: hashedPassword },
-            ]);
-            mockAuthRepository.setLoginAttempt.mockResolvedValue({} as any);
-
-            // Act & Assert
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                new BadRequestError('Email or Password is incorrect.'),
-            );
-            expect(mockAuthRepository.setLoginAttempt).toHaveBeenCalledWith(
-                mockLoginData.email,
-                1,
-            );
-        });
-
-        it('When login with wrong password on third attempt, then lock account for 15 minutes', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            const mockUser = getMockUser({
-                email: mockLoginData.email,
-                isVerified: true,
-                loginAttempt: 2,
-                loginLock: null,
-            });
-            const hashedPassword = await passwordUtil.hashPassword(
-                'CorrectPassword123!',
-            );
-            mockAuthRepository.findUserByEmail.mockResolvedValue([
-                { ...mockUser, password: hashedPassword },
-            ]);
-            mockAuthRepository.setLoginAttempt.mockResolvedValue({} as any);
-            mockAuthRepository.setLoginLock.mockResolvedValue({} as any);
-
-            vitest.mock('#utils/password.js', () => ({
-                comparePassword: vitest.fn().mockResolvedValue(false),
-                hashPassword: vitest.fn(),
-            }));
-
-            // Act & Assert
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                new BadRequestError('Email or Password is incorrect.'),
-            );
-            expect(mockAuthRepository.setLoginAttempt).toHaveBeenCalledWith(
-                mockLoginData.email,
-                0,
-            );
-            expect(mockAuthRepository.setLoginLock).toHaveBeenCalled();
-        });
-
-        it('When login and repository error occurs during findUserByEmail, then throw error', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            mockAuthRepository.findUserByEmail.mockRejectedValue(
-                new Error('Database connection error'),
-            );
-
-            // Act & Assert
-            await expect(authService.login(mockLoginData)).rejects.toThrow(
-                'Database connection error',
-            );
-        });
-
-        it('When login and repository error occurs during resetLoginAttemptAndLock, then throw error', async () => {
-            // Arrange
-            const mockLoginData = getMockLoginData();
-            const hashedPassword = await passwordUtil.hashPassword(
-                mockLoginData.password,
-            );
-            const mockUser = getMockUser({
-                email: mockLoginData.email,
-                isVerified: true,
-                loginAttempt: 0,
-                loginLock: null,
-            });
-            mockAuthRepository.findUserByEmail.mockResolvedValue([
-                { ...mockUser, password: hashedPassword },
-            ]);
-            mockAuthRepository.resetLoginAttemptAndLock.mockRejectedValue(
-                new Error('Failed to reset login'),
+            mockAuthRepository.resetLoginAttemptAndLock.mockResolvedValue(
+                {} as any,
             );
             vitest
                 .spyOn(passwordUtil, 'comparePassword')
                 .mockResolvedValue(true);
 
-            // Act & Assert
+            const result = await authService.login(mockLoginData);
+
+            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
+                mockLoginData.email,
+            );
+            expect(passwordUtil.comparePassword).toHaveBeenCalledWith(
+                mockLoginData.password,
+                existingUser.password,
+            );
+            expect(
+                mockAuthRepository.resetLoginAttemptAndLock,
+            ).toHaveBeenCalledWith(mockLoginData.email);
+            expect(result).toEqual(
+                expect.objectContaining({
+                    id: existingUser.id,
+                    email: existingUser.email,
+                    username: existingUser.username,
+                    tokenVersion: existingUser.tokenVersion,
+                }),
+            );
+            expect(
+                (result as Record<string, unknown>).password,
+            ).toBeUndefined();
+        });
+
+        it('throws when user does not exist', async () => {
+            const mockLoginData = makeLoginData();
+            mockAuthRepository.findUserByEmail.mockResolvedValue([]);
+
             await expect(authService.login(mockLoginData)).rejects.toThrow(
-                'Failed to reset login',
+                new BadRequestError('Email or Password is incorrect.'),
             );
         });
-    });
 
-    describe('logoutAll', () => {
-        it('When logoutAll with valid userId and matching tokenVersion, then successfully increment token version', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
+        it('throws when user exists but email is not verified', async () => {
+            const mockLoginData = makeLoginData();
+            const existingUser = makeAuthUser({
+                email: mockLoginData.email,
+                emailVerifiedAt: null,
             });
-            const logoutAllInfo = {
-                userId: mockUser.id,
-                tokenVersion: mockUser.tokenVersion,
-            };
-            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
-            mockAuthRepository.incrementTokenVersion.mockResolvedValue(
+            mockAuthRepository.findUserByEmail.mockResolvedValue([
+                existingUser,
+            ]);
+
+            await expect(authService.login(mockLoginData)).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
+            );
+        });
+
+        it('throws when user account is currently locked', async () => {
+            const mockLoginData = makeLoginData();
+            const existingUser = makeAuthUser({
+                email: mockLoginData.email,
+                loginUntil: new Date(Date.now() + 10 * 60 * 1000),
+                emailVerifiedAt: new Date(),
+            });
+            mockAuthRepository.findUserByEmail.mockResolvedValue([
+                existingUser,
+            ]);
+
+            await expect(authService.login(mockLoginData)).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
+            );
+            expect(
+                mockAuthRepository.updateLoginSecurityState,
+            ).not.toHaveBeenCalled();
+        });
+
+        it('increments login security state when password is wrong', async () => {
+            const mockLoginData = makeLoginData();
+            const existingUser = makeAuthUser({
+                email: mockLoginData.email,
+                password: 'hashed-password',
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: 0,
+                loginUntil: null,
+            });
+
+            mockAuthRepository.findUserByEmail.mockResolvedValue([
+                existingUser,
+            ]);
+            vitest
+                .spyOn(passwordUtil, 'comparePassword')
+                .mockResolvedValue(false);
+            mockAuthRepository.updateLoginSecurityState.mockResolvedValue(
                 {} as any,
             );
 
-            // Act
-            await authService.logoutAll(logoutAllInfo);
-
-            // Assert
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
+            await expect(authService.login(mockLoginData)).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
             );
             expect(
-                mockAuthRepository.incrementTokenVersion,
-            ).toHaveBeenCalledWith(mockUser.id);
-        });
-
-        it('When logoutAll with non-existing userId, then throw BadRequestError', async () => {
-            // Arrange
-            const logoutAllInfo = {
-                userId: 'non-existing-user-id',
-                tokenVersion: 1,
-            };
-            mockAuthRepository.findUserById.mockResolvedValue([]);
-
-            // Act & Assert
-            await expect(authService.logoutAll(logoutAllInfo)).rejects.toThrow(
-                new BadRequestError('User not found.'),
-            );
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                logoutAllInfo.userId,
-            );
-            expect(
-                mockAuthRepository.incrementTokenVersion,
-            ).not.toHaveBeenCalled();
-        });
-
-        it('When logoutAll with incorrect tokenVersion, then throw BadRequestError', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
+                mockAuthRepository.updateLoginSecurityState,
+            ).toHaveBeenCalledWith(mockLoginData.email, {
+                attempt: 1,
+                lockUntil: null,
             });
-            const logoutAllInfo = {
-                userId: mockUser.id,
-                tokenVersion: 2,
-            };
-            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
-
-            // Act & Assert
-            await expect(authService.logoutAll(logoutAllInfo)).rejects.toThrow(
-                new BadRequestError('Token version is incorrect.'),
-            );
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
-            );
-            expect(
-                mockAuthRepository.incrementTokenVersion,
-            ).not.toHaveBeenCalled();
         });
 
-        it('When logoutAll and repository error occurs during findUserById, then throw error', async () => {
-            // Arrange
-            const logoutAllInfo = {
-                userId: 'user-id',
-                tokenVersion: 1,
-            };
-            mockAuthRepository.findUserById.mockRejectedValue(
-                new Error('Database connection error'),
-            );
-
-            // Act & Assert
-            await expect(authService.logoutAll(logoutAllInfo)).rejects.toThrow(
-                'Database connection error',
-            );
-            expect(
-                mockAuthRepository.incrementTokenVersion,
-            ).not.toHaveBeenCalled();
-        });
-
-        it('When logoutAll and repository error occurs during incrementTokenVersion, then throw error', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
+        it('locks account after reaching the first login lock threshold', async () => {
+            const mockLoginData = makeLoginData();
+            const existingUser = makeAuthUser({
+                email: mockLoginData.email,
+                password: 'hashed-password',
+                emailVerifiedAt: new Date(),
+                failLoginAttempt: AUTH_LIMITS.LOGIN_LOCK_1_THRESHOLD - 1,
+                loginUntil: null,
             });
-            const logoutAllInfo = {
-                userId: mockUser.id,
-                tokenVersion: mockUser.tokenVersion,
-            };
-            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
-            mockAuthRepository.incrementTokenVersion.mockRejectedValue(
-                new Error('Failed to increment token version'),
+
+            vitest
+                .spyOn(passwordUtil, 'comparePassword')
+                .mockResolvedValue(false);
+            mockAuthRepository.findUserByEmail.mockResolvedValue([
+                existingUser,
+            ]);
+            mockAuthRepository.updateLoginSecurityState.mockResolvedValue(
+                {} as any,
+            );
+            const now = Date.now();
+            const dateSpy = vitest.spyOn(Date, 'now').mockReturnValue(now);
+
+            await expect(authService.login(mockLoginData)).rejects.toThrow(
+                new BadRequestError('Email or Password is incorrect.'),
             );
 
-            // Act & Assert
-            await expect(authService.logoutAll(logoutAllInfo)).rejects.toThrow(
-                'Failed to increment token version',
+            expect(
+                mockAuthRepository.updateLoginSecurityState,
+            ).toHaveBeenCalledWith(
+                mockLoginData.email,
+                expect.objectContaining({
+                    attempt: AUTH_LIMITS.LOGIN_LOCK_1_THRESHOLD,
+                    lockUntil: expect.any(Date),
+                }),
             );
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
+            const lockUntil = (
+                mockAuthRepository.updateLoginSecurityState as Mocked<any>
+            ).mock.calls[0][1].lockUntil;
+            expect(lockUntil.getTime()).toBe(
+                now + AUTH_LIMITS.LOGIN_LOCK_1_DURATION_MS,
+            );
+            dateSpy.mockRestore();
+        });
+
+        it('propagates repository errors during login', async () => {
+            const mockLoginData = makeLoginData();
+            mockAuthRepository.findUserByEmail.mockRejectedValue(
+                new Error('Database error'),
+            );
+
+            await expect(authService.login(mockLoginData)).rejects.toThrow(
+                'Database error',
             );
         });
     });
 
     describe('verifyAccount', () => {
-        it('When verifyAccount with valid code and unverified user, then delete otp and return', async () => {
-            // Arrange
-            const mockEmail = 'user@example.com';
-            const mockUser = getMockUser({
-                email: mockEmail,
-                isVerified: false,
+        it('verifies account when code is correct', async () => {
+            const mockUser = makeAuthUser({
+                email: 'verify@example.com',
+                emailVerifiedAt: null,
             });
             const verifyInfo = {
-                email: mockEmail,
+                email: mockUser.email,
                 code: '123456',
             };
 
             mockAuthRepository.findUserByEmail.mockResolvedValue([mockUser]);
-            mockAuthRepository.verifyUser.mockResolvedValue({
-                id: 'otp-id',
-            } as any);
-            mockAuthRepository.deleteOtpByUserId.mockResolvedValue({} as any);
+            mockOtpRepository.getOtp.mockResolvedValue({
+                code: 'hashed-otp',
+                attempt: 0,
+                createdAt: new Date().toISOString(),
+            });
+            vitest.spyOn(otpUtil, 'compareOtp').mockResolvedValue(true);
+            mockOtpRepository.deleteOtp.mockResolvedValue(1);
+            mockAuthRepository.updateUserEmailVerifiedAt.mockResolvedValue(
+                {} as any,
+            );
 
-            // Act
             await authService.verifyAccount(verifyInfo);
 
-            // Assert
-            expect(mockAuthRepository.findUserByEmail).toHaveBeenCalledWith(
-                mockEmail,
+            expect(mockOtpRepository.getOtp).toHaveBeenCalledWith({
+                otpType: 'email_verification',
+                userId: mockUser.id,
+            });
+            expect(otpUtil.compareOtp).toHaveBeenCalledWith(
+                '123456',
+                'hashed-otp',
             );
-            expect(mockAuthRepository.verifyUser).toHaveBeenCalledWith(
-                mockUser.id,
-                verifyInfo.code,
-            );
-            expect(mockAuthRepository.deleteOtpByUserId).toHaveBeenCalledWith(
-                mockUser.id,
-                verifyInfo.code,
-            );
+            expect(mockOtpRepository.deleteOtp).toHaveBeenCalledWith({
+                otpType: 'email_verification',
+                userId: mockUser.id,
+            });
+            expect(
+                mockAuthRepository.updateUserEmailVerifiedAt,
+            ).toHaveBeenCalledWith(mockUser.id);
         });
 
-        it('When verifyAccount with non-existing user email, then throw BadRequestError', async () => {
-            // Arrange
-            const verifyInfo = {
-                email: 'missing@example.com',
-                code: '123456',
-            };
+        it('throws when user is missing or already verified', async () => {
             mockAuthRepository.findUserByEmail.mockResolvedValue([]);
 
-            // Act & Assert
-            await expect(authService.verifyAccount(verifyInfo)).rejects.toThrow(
-                new BadRequestError('User not found.'),
-            );
-            expect(mockAuthRepository.verifyUser).not.toHaveBeenCalled();
-            expect(mockAuthRepository.deleteOtpByUserId).not.toHaveBeenCalled();
+            await expect(
+                authService.verifyAccount({
+                    email: 'missing@example.com',
+                    code: '123456',
+                }),
+            ).rejects.toThrow(new BadRequestError('Verification failed.'));
+
+            const verifiedUser = makeAuthUser({ emailVerifiedAt: new Date() });
+            mockAuthRepository.findUserByEmail.mockResolvedValue([
+                verifiedUser,
+            ]);
+
+            await expect(
+                authService.verifyAccount({
+                    email: verifiedUser.email,
+                    code: '123456',
+                }),
+            ).rejects.toThrow(new BadRequestError('Verification failed.'));
         });
 
-        it('When verifyAccount with already verified user, then throw BadRequestError', async () => {
-            // Arrange
-            const mockEmail = 'verified@example.com';
-            const verifyInfo = {
-                email: mockEmail,
-                code: '123456',
-            };
-            const mockUser = getMockUser({
-                email: mockEmail,
-                isVerified: true,
+        it('throws when OTP is expired or missing', async () => {
+            const mockUser = makeAuthUser({
+                email: 'verify@example.com',
+                emailVerifiedAt: null,
             });
             mockAuthRepository.findUserByEmail.mockResolvedValue([mockUser]);
+            mockOtpRepository.getOtp.mockResolvedValue(null);
 
-            // Act & Assert
-            await expect(authService.verifyAccount(verifyInfo)).rejects.toThrow(
-                new BadRequestError('User is already verified.'),
-            );
-            expect(mockAuthRepository.verifyUser).not.toHaveBeenCalled();
-            expect(mockAuthRepository.deleteOtpByUserId).not.toHaveBeenCalled();
+            await expect(
+                authService.verifyAccount({
+                    email: mockUser.email,
+                    code: '123456',
+                }),
+            ).rejects.toThrow(new BadRequestError('OTP expired or invalid.'));
         });
 
-        it('When verifyAccount with incorrect otp code, then throw BadRequestError', async () => {
-            // Arrange
-            const mockEmail = 'user@example.com';
-            const mockUser = getMockUser({
-                email: mockEmail,
-                isVerified: false,
+        it('increments OTP attempt when code is invalid', async () => {
+            const mockUser = makeAuthUser({
+                email: 'verify@example.com',
+                emailVerifiedAt: null,
             });
-            const verifyInfo = {
-                email: mockEmail,
-                code: '000000',
-            };
             mockAuthRepository.findUserByEmail.mockResolvedValue([mockUser]);
-            mockAuthRepository.verifyUser.mockResolvedValue(null);
-
-            // Act & Assert
-            await expect(authService.verifyAccount(verifyInfo)).rejects.toThrow(
-                new BadRequestError('OTP is incorrect.'),
-            );
-            expect(mockAuthRepository.deleteOtpByUserId).not.toHaveBeenCalled();
-        });
-
-        it('When verifyAccount and repository error occurs during findUserByEmail, then throw error', async () => {
-            // Arrange
-            const verifyInfo = {
-                email: 'error@example.com',
-                code: '123456',
-            };
-            mockAuthRepository.findUserByEmail.mockRejectedValue(
-                new Error('Database connection error'),
-            );
-
-            // Act & Assert
-            await expect(authService.verifyAccount(verifyInfo)).rejects.toThrow(
-                'Database connection error',
-            );
-            expect(mockAuthRepository.verifyUser).not.toHaveBeenCalled();
-        });
-
-        it('When verifyAccount and repository error occurs during verifyUser, then throw error', async () => {
-            // Arrange
-            const mockEmail = 'user@example.com';
-            const mockUser = getMockUser({
-                email: mockEmail,
-                isVerified: false,
+            mockOtpRepository.getOtp.mockResolvedValue({
+                code: 'hashed-otp',
+                attempt: 0,
+                createdAt: new Date().toISOString(),
             });
-            const verifyInfo = {
-                email: mockEmail,
-                code: '123456',
-            };
-            mockAuthRepository.findUserByEmail.mockResolvedValue([mockUser]);
-            mockAuthRepository.verifyUser.mockRejectedValue(
-                new Error('Failed to verify OTP'),
+            vitest.spyOn(otpUtil, 'compareOtp').mockResolvedValue(false);
+            mockOtpRepository.incrementOtpAttempt.mockResolvedValue(2);
+
+            await expect(
+                authService.verifyAccount({
+                    email: mockUser.email,
+                    code: 'wrong-code',
+                }),
+            ).rejects.toThrow(new BadRequestError('OTP expired or invalid.'));
+
+            expect(mockOtpRepository.incrementOtpAttempt).toHaveBeenCalledWith({
+                otpType: 'email_verification',
+                userId: mockUser.id,
+            });
+        });
+    });
+
+    describe('logoutAll', () => {
+        it('increments token version when user token version matches', async () => {
+            const mockUser = makeAuthUser({ tokenVersion: 2 });
+            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
+            mockAuthRepository.incrementTokenVersion.mockResolvedValue(
+                {} as any,
             );
 
-            // Act & Assert
-            await expect(authService.verifyAccount(verifyInfo)).rejects.toThrow(
-                'Failed to verify OTP',
-            );
-            expect(mockAuthRepository.deleteOtpByUserId).not.toHaveBeenCalled();
+            await authService.logoutAll({
+                userId: mockUser.id,
+                tokenVersion: 2,
+            });
+
+            expect(
+                mockAuthRepository.incrementTokenVersion,
+            ).toHaveBeenCalledWith(mockUser.id);
         });
 
-        it('When verifyAccount and repository error occurs during deleteOtpByUserId, then throw error', async () => {
-            // Arrange
-            const mockEmail = 'user@example.com';
-            const mockUser = getMockUser({
-                email: mockEmail,
-                isVerified: false,
-            });
-            const verifyInfo = {
-                email: mockEmail,
-                code: '123456',
-            };
-            mockAuthRepository.findUserByEmail.mockResolvedValue([mockUser]);
-            mockAuthRepository.verifyUser.mockResolvedValue({
-                id: 'otp-id',
-            } as any);
-            mockAuthRepository.deleteOtpByUserId.mockRejectedValue(
-                new Error('Failed to delete OTP'),
-            );
+        it('throws when user does not exist', async () => {
+            mockAuthRepository.findUserById.mockResolvedValue([]);
 
-            // Act & Assert
-            await expect(authService.verifyAccount(verifyInfo)).rejects.toThrow(
-                'Failed to delete OTP',
-            );
+            await expect(
+                authService.logoutAll({
+                    userId: 'missing-id',
+                    tokenVersion: 0,
+                }),
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
+        });
+
+        it('throws when token version does not match', async () => {
+            const mockUser = makeAuthUser({ tokenVersion: 1 });
+            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
+
+            await expect(
+                authService.logoutAll({ userId: mockUser.id, tokenVersion: 2 }),
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
         });
     });
 
     describe('logout', () => {
-        it('When logout with valid token info and leftTime > 0, then store jti in Redis', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
-            });
-            const futureTimestamp = Math.ceil(
-                (Date.now() + 10 * 60 * 1000) / 1000,
-            );
-            const logoutInfo = {
-                sub: mockUser.id,
-                token_version: mockUser.tokenVersion,
-                jti: 'test-jti-123',
-                exp: futureTimestamp,
-            };
+        it('blacklists token when logout info is valid and token has remaining life', async () => {
+            const now = Date.now();
+            vitest.spyOn(Date, 'now').mockReturnValue(now);
+
+            const mockUser = makeAuthUser({ tokenVersion: 1 });
             mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
-            const redisSpy = vitest
-                .spyOn(redisConfig.redisInstance, 'set')
-                .mockResolvedValue('OK' as any);
+            mockTokenRepository.blacklistToken.mockResolvedValue(undefined);
 
-            // Act
-            await authService.logout(logoutInfo);
-
-            // Assert
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
-            );
-            expect(redisSpy).toHaveBeenCalledWith(
-                `jti_${logoutInfo.jti}`,
-                'blacklisted',
-                {
-                    expiration: {
-                        type: 'EX',
-                        value: expect.any(Number),
-                    },
-                },
-            );
-        });
-
-        it('When logout with valid token info and leftTime <= 0, then not store jti in Redis', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
-            });
-            const pastTimestamp = Math.ceil(
-                (Date.now() - 10 * 60 * 1000) / 1000,
-            );
-            const logoutInfo = {
+            await authService.logout({
                 sub: mockUser.id,
-                token_version: mockUser.tokenVersion,
-                jti: 'test-jti-123',
-                exp: pastTimestamp,
-            };
-            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
-            const redisSpy = vitest
-                .spyOn(redisConfig.redisInstance, 'set')
-                .mockResolvedValue('OK' as any);
-
-            // Act
-            await authService.logout(logoutInfo);
-
-            // Assert
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
-            );
-            expect(redisSpy).not.toHaveBeenCalled();
-        });
-
-        it('When logout with non-existing userId, then throw BadRequestError', async () => {
-            // Arrange
-            const futureTimestamp = Math.ceil(
-                (Date.now() + 10 * 60 * 1000) / 1000,
-            );
-            const logoutInfo = {
-                sub: 'non-existing-user-id',
                 token_version: 1,
-                jti: 'test-jti-123',
-                exp: futureTimestamp,
-            };
+                jti: 'token-jti',
+                exp: Math.floor(now / 1000) + 120,
+            });
+
+            expect(mockTokenRepository.blacklistToken).toHaveBeenCalledWith({
+                jti: 'token-jti',
+                exp: 120,
+            });
+        });
+
+        it('does not blacklist token when expiry is already passed', async () => {
+            const now = Date.now();
+            vitest.spyOn(Date, 'now').mockReturnValue(now);
+
+            const mockUser = makeAuthUser({ tokenVersion: 1 });
+            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
+
+            await authService.logout({
+                sub: mockUser.id,
+                token_version: 1,
+                jti: 'token-jti',
+                exp: Math.floor(now / 1000) - 1,
+            });
+
+            expect(mockTokenRepository.blacklistToken).not.toHaveBeenCalled();
+        });
+
+        it('throws when logout user does not exist or token version is invalid', async () => {
             mockAuthRepository.findUserById.mockResolvedValue([]);
+            await expect(
+                authService.logout({
+                    sub: 'missing-id',
+                    token_version: 1,
+                    jti: 'token-jti',
+                    exp: Math.floor(Date.now() / 1000) + 60,
+                }),
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
 
-            // Act & Assert
-            await expect(authService.logout(logoutInfo)).rejects.toThrow(
-                new BadRequestError('User not found.'),
-            );
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                logoutInfo.sub,
-            );
-        });
-
-        it('When logout with incorrect tokenVersion, then throw BadRequestError', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
-            });
-            const futureTimestamp = Math.ceil(
-                (Date.now() + 10 * 60 * 1000) / 1000,
-            );
-            const logoutInfo = {
-                sub: mockUser.id,
-                token_version: 2,
-                jti: 'test-jti-123',
-                exp: futureTimestamp,
-            };
+            const mockUser = makeAuthUser({ tokenVersion: 1 });
             mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
 
-            // Act & Assert
-            await expect(authService.logout(logoutInfo)).rejects.toThrow(
-                new BadRequestError('Token version is incorrect.'),
-            );
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
-            );
-        });
-
-        it('When logout and repository error occurs during findUserById, then throw error', async () => {
-            // Arrange
-            const futureTimestamp = Math.ceil(
-                (Date.now() + 10 * 60 * 1000) / 1000,
-            );
-            const logoutInfo = {
-                sub: 'user-id',
-                token_version: 1,
-                jti: 'test-jti-123',
-                exp: futureTimestamp,
-            };
-            mockAuthRepository.findUserById.mockRejectedValue(
-                new Error('Database connection error'),
-            );
-
-            // Act & Assert
-            await expect(authService.logout(logoutInfo)).rejects.toThrow(
-                'Database connection error',
-            );
-        });
-
-        it('When logout and Redis error occurs during set, then throw error', async () => {
-            // Arrange
-            const mockUser = getMockUser({
-                tokenVersion: 1,
-            });
-            const futureTimestamp = Math.ceil(
-                (Date.now() + 10 * 60 * 1000) / 1000,
-            );
-            const logoutInfo = {
-                sub: mockUser.id,
-                token_version: mockUser.tokenVersion,
-                jti: 'test-jti-123',
-                exp: futureTimestamp,
-            };
-            mockAuthRepository.findUserById.mockResolvedValue([mockUser]);
-            vitest
-                .spyOn(redisConfig.redisInstance, 'set')
-                .mockRejectedValue(new Error('Redis connection error'));
-
-            // Act & Assert
-            await expect(authService.logout(logoutInfo)).rejects.toThrow(
-                'Redis connection error',
-            );
-            expect(mockAuthRepository.findUserById).toHaveBeenCalledWith(
-                mockUser.id,
-            );
+            await expect(
+                authService.logout({
+                    sub: mockUser.id,
+                    token_version: 2,
+                    jti: 'token-jti',
+                    exp: Math.floor(Date.now() / 1000) + 60,
+                }),
+            ).rejects.toThrow(new BadRequestError('Invalid token.'));
         });
     });
 });

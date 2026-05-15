@@ -2,7 +2,6 @@ import {
     pgTable,
     uuid,
     varchar,
-    boolean,
     timestamp,
     integer,
 } from 'drizzle-orm/pg-core';
@@ -13,13 +12,13 @@ export const users = pgTable('users', {
     email: varchar('email', { length: 50 }).notNull().unique(),
     password: varchar('password', { length: 255 }).notNull(),
 
-    isVerified: boolean('is_verified').notNull().default(false),
+    emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
 
-    // loginLock as a Date (Timestamp)
-    loginLock: timestamp('login_lock', { withTimezone: true }),
+    // loginUntil as a Date (Timestamp)
+    loginUntil: timestamp('login_until', { withTimezone: true }),
 
-    // loginAttempt restricted via logic, but stored as integer
-    loginAttempt: integer('login_attempt').notNull().default(0),
+    // failLoginAttempt restricted via logic, but stored as integer
+    failLoginAttempt: integer('fail_login_attempt').notNull().default(0),
 
     tokenVersion: integer('token_version').notNull().default(0),
 
