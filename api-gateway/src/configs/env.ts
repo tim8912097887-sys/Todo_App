@@ -21,6 +21,14 @@ const EnvSchema = z.object({
         error: "Log level must be 'error','warn','info','debug'",
     }),
     CENTRAL_LOG_TOKEN: z.string().nonempty('Central log token is required'),
+    REDIS_URL: z
+        .string()
+        .refine(
+            (url) => url.startsWith('redis://') || url.startsWith('rediss://'),
+            {
+                message: 'Invalid Redis URL',
+            },
+        ),
 });
 
 const result = EnvSchema.safeParse(process.env);

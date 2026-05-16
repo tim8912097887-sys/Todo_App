@@ -5,6 +5,7 @@ import { logger } from '#configs/logger.js';
 import { shutdown, subscribeShutdown } from '#utils/shutdown.js';
 import { db as _db, dbServer } from './db/index.js';
 import { connectRabbitMQ } from './configs/rabbitmq.js';
+import { RedisClient } from './configs/redis.js';
 
 class AppServer {
     private static instance: AppServer;
@@ -27,6 +28,7 @@ class AppServer {
     public async start(): Promise<void> {
         try {
             await dbServer.testConnection();
+            RedisClient.getInstance();
             await connectRabbitMQ();
             const app = initializeApp();
             this.server = app.listen(env.PORT, () => {
