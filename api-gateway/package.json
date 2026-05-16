@@ -5,7 +5,7 @@
     "main": "index.js",
     "type": "module",
     "scripts": {
-        "dev": "tsx watch --env-file=.env.dev src/configs/logger.ts",
+        "dev": "tsx watch --env-file=.env.dev src/index.ts",
         "build": "tsc -p tsconfig.build.json",
         "lint": "eslint ./src",
         "lint:fix": "eslint ./src --fix"
@@ -17,6 +17,7 @@
     "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@types/express": "^5.0.6",
+        "@types/morgan": "^1.9.10",
         "@types/node": "^25.8.0",
         "eslint": "^10.4.0",
         "ts-node": "^10.9.2",
