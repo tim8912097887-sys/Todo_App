@@ -29,6 +29,29 @@ const EnvSchema = z.object({
                 message: 'Invalid Redis URL',
             },
         ),
+    AUTH_SERVICE_URL: z
+        .string()
+        .refine(
+            (url) => url.startsWith('http://') || url.startsWith('https://'),
+            {
+                message: 'Invalid URL for Auth Service',
+            },
+        ),
+    TODO_SERVICE_URL: z
+        .string()
+        .refine(
+            (url) => url.startsWith('http://') || url.startsWith('https://'),
+            {
+                message: 'Invalid URL for Todo Service',
+            },
+        ),
+    DEFAULT_TIMEOUT: z.coerce
+        .number({
+            error: 'DEFAULT_TIMEOUT must be a number',
+        })
+        .int()
+        .positive('DEFAULT_TIMEOUT must be a positive integer')
+        .default(10000),
 });
 
 const result = EnvSchema.safeParse(process.env);

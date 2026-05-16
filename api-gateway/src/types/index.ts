@@ -38,3 +38,11 @@ export type ValidationError = {
     field: string;
     value: string;
 };
+
+export type ServiceConfig = {
+    path: string;
+    url: string;
+    pathRewrite: { [key: string]: string };
+    name: string;
+    timeout?: number;
+};

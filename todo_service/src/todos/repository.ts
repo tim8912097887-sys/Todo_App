@@ -2,7 +2,7 @@ import { logger } from '#configs/logger.js';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { CreateTodo } from './schema/create.js';
 import { UpdateTodo } from './schema/update.js';
-import { todos } from '#src/db/schema/todo.js';
+import { todos } from '#db/schema/todo.js';
 import { TodoDto } from './dto.js';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 
