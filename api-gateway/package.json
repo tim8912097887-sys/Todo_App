@@ -1,0 +1,38 @@
+{
+    "name": "api-gateway",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch --env-file=.env.dev src/index.ts",
+        "build": "tsc -p tsconfig.build.json",
+        "lint": "eslint ./src",
+        "lint:fix": "eslint ./src --fix"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "packageManager": "pnpm@10.26.1",
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@types/express": "^5.0.6",
+        "@types/morgan": "^1.9.10",
+        "@types/node": "^25.8.0",
+        "eslint": "^10.4.0",
+        "ts-node": "^10.9.2",
+        "tsx": "^4.22.0",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.59.3"
+    },
+    "dependencies": {
+        "@logtail/node": "^0.5.8",
+        "@logtail/winston": "^0.5.8",
+        "cors": "^2.8.6",
+        "dotenv": "^17.4.2",
+        "express": "^5.2.1",
+        "morgan": "^1.10.1",
+        "winston": "^3.19.0",
+        "zod": "^4.4.3"
+    }
+}

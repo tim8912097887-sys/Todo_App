@@ -1,0 +1,26 @@
+{
+    "extends": "./tsconfig.base.json",
+    "compilerOptions": {
+        // Path aliases
+        "paths": {
+            "#*": ["./src/*"]
+        },
+        // File Location
+        "rootDir": "src",
+        "outDir": "dist",
+        // Emit Options
+        "sourceMap": true, // Generate source maps
+        "removeComments": true, // Remove comments in output
+        "noEmitOnError": true, // Don't emit if there are errors
+        // Performance
+        "skipLibCheck": true // Skip type checking of declaration files
+    },
+    "include": ["src/**/*.ts"],
+    "exclude": [
+        "node_modules",
+        "src/__tests__/**/*",
+        "dist",
+        "coverage",
+        "logs"
+    ]
+}
