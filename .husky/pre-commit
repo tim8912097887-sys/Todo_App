@@ -6,3 +6,6 @@ pnpm run lint
 
 cd ../email_service
 pnpm run lint
+
+cd ../api-gateway
+pnpm run lint
