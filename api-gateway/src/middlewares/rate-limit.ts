@@ -6,7 +6,7 @@ import { RequestHandler } from 'express';
 export const rateLimitMiddleware: RequestHandler = async (req, res, next) => {
     const ip = req.ip;
     const key = `rate_limit:${ip}`;
-    const result = await slidingWindowCounter(key, 60_000, 10);
+    const result = await slidingWindowCounter(key, 60_000, 100);
     // Set rate limit headers
     res.setHeader('X-RateLimit-Limit', result.limit);
     res.setHeader(

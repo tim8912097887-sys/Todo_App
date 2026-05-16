@@ -3,17 +3,20 @@ import morgan from 'morgan';
 import { errorHandler } from '#middlewares/error-handler.js';
 import { notFoundHandler } from '#middlewares/not-found-handler.js';
 import { rateLimitMiddleware } from '#middlewares/rate-limit.js';
+import { proxyServices } from '#configs/proxy.js';
 
 export const initializeApp = () => {
     const app = express();
-    // Body parser middleware
-    app.use(express.json());
 
     // HTTP request logger middleware
     app.use(
         morgan(':method :url :status :res[content-length] - :response-time ms'),
     ); // Log to console
 
+    // Proxy setup
+    proxyServices(app);
+    // Body parser middleware
+    app.use(express.json());
     // Rate Limiting Middleware
     app.use(rateLimitMiddleware);
     // Healthy check endpoint

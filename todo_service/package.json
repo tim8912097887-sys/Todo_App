@@ -15,8 +15,8 @@
         "test": "vitest run",
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage",
-        "db:generate": "npx drizzle-kit generate",
-        "db:migrate": "npx drizzle-kit migrate"
+        "db:generate": "drizzle-kit generate",
+        "db:migrate": "drizzle-kit migrate"
     },
     "keywords": [],
     "author": "",
