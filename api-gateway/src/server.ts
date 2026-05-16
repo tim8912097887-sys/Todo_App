@@ -2,6 +2,7 @@ import express from 'express';
 import morgan from 'morgan';
 import { errorHandler } from '#middlewares/error-handler.js';
 import { notFoundHandler } from '#middlewares/not-found-handler.js';
+import { rateLimitMiddleware } from '#middlewares/rate-limit.js';
 
 export const initializeApp = () => {
     const app = express();
@@ -13,6 +14,8 @@ export const initializeApp = () => {
         morgan(':method :url :status :res[content-length] - :response-time ms'),
     ); // Log to console
 
+    // Rate Limiting Middleware
+    app.use(rateLimitMiddleware);
     // Healthy check endpoint
     app.get('/health', (_req, res) => {
         res.status(200).json({
