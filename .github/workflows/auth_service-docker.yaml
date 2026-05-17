@@ -66,6 +66,8 @@ jobs:
                   node-version: 20
             - name: Install dependencies
               run: pnpm install
+            - name: Run migration
+              run: pnpm run db:migrate
             - name: Lint
               run: pnpm lint
             - name: Test
