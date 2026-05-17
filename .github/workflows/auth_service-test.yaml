@@ -17,7 +17,7 @@ env:
     PORT: 3002
     LOG_LEVEL: debug
     CENTRAL_LOG_TOKEN: ${{ secrets.CENTRAL_LOG_TOKEN || 'rURY92XXbmu4jxSetfGsisdf' }}
-    DATABASE_URL: ${{ secrets.AUTH_SERVICE_DATABASE_URL || 'postgresql://postgres:password@localhost:5433/auth_service' }}
+    DATABASE_URL: ${{ secrets.AUTH_SERVICE_DATABASE_URL || 'postgresql://postgres:password@localhost:5432/auth_service' }}
     TOKEN_SECRET: ${{ secrets.TOKEN_SECRET || 'e7ead07d8910318b24f3b5d5360b3956' }}
     TOKEN_EXPIRES_IN: 7d
     JWT_ISSUER: http://localhost:3002
@@ -35,7 +35,7 @@ jobs:
                     POSTGRES_PASSWORD: password
                     POSTGRES_DB: auth_service
                 ports:
-                    - 5433:5432
+                    - 5432:5432
                 options: >-
                     --health-cmd pg_isready
                     --health-interval 10s
