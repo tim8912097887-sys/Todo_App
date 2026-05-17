@@ -13,7 +13,7 @@
         "lint": "eslint ./src",
         "lint:fix": "eslint ./src --fix",
         "db:generate": "drizzle-kit generate",
-        "db:migrate": "drizzle-kit migrate --verbose",
+        "db:migrate": "drizzle-kit migrate",
         "test": "vitest run",
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage"
